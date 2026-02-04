@@ -1,0 +1,84 @@
+# =========================
+# Build artifacts (general)
+# =========================
+build/
+Build/
+out/
+bin/
+obj/
+*.o
+*.a
+*.so
+*.d
+*.elf
+*.map
+*.hex
+*.bin
+*.lst
+*.su
+
+# =========================
+# STM32 / CubeIDE / CubeMX
+# =========================
+Debug/
+Release/
+Debug*/
+Release*/
+*.launch
+.settings/
+.project
+.cproject
+.mxproject
+*.ioc
+*.log
+*.bak
+*.tmp
+*.srec
+
+# CubeMX generated - keep sources, ignore backups
+*.ioc.bak
+*.mxproject.bak
+
+# =========================
+# CMake / Ninja (if used)
+# =========================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.ninja
+.ninja_deps
+.ninja_log
+
+# =========================
+# IDE settings
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# =========================
+# ESP-IDF (your original)
+# =========================
+sdkconfig.old
+managed_components/
+dependencies.lock
+._*
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+.env
+.venv/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
