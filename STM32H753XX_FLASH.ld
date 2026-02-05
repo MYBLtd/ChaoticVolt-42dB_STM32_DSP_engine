@@ -196,6 +196,15 @@ SECTIONS
     . = ALIGN(8);
   } >DTCMRAM
 
+  /* DMA accessible memory in D2 SRAM - DMA1/DMA2 can only access D2 domain */
+  .RAM_D2 (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.RAM_D2)
+    *(.RAM_D2*)
+    . = ALIGN(4);
+  } >RAM_D2
+
 
 
   /* Remove information from the standard libraries */
