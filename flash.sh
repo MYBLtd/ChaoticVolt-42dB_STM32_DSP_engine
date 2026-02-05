@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ELF="${1:-build/ESP32_HexMonitor.elf}"
+ELF="${1:-build/42dB_DSP_Engine.elf}"
 
 gdb-multiarch -q "$ELF" \
   -ex "set architecture armv7e-m" \

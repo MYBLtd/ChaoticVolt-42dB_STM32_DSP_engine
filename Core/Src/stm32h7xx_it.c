@@ -10,6 +10,10 @@
 
 extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
+extern SAI_HandleTypeDef hsai_rx;
+extern SAI_HandleTypeDef hsai_tx;
+extern DMA_HandleTypeDef hdma_sai_rx;
+extern DMA_HandleTypeDef hdma_sai_tx;
 
 /******************************************************************************/
 /*           Cortex Processor Interruption and Exception Handlers          */
@@ -115,4 +119,29 @@ void USART2_IRQHandler(void)
 void USART3_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&huart3);
+}
+
+/**
+ * @brief This function handles DMA1 Stream0 global interrupt (SAI2_A RX).
+ */
+void DMA1_Stream0_IRQHandler(void)
+{
+    HAL_DMA_IRQHandler(&hdma_sai_rx);
+}
+
+/**
+ * @brief This function handles DMA1 Stream1 global interrupt (SAI2_B TX).
+ */
+void DMA1_Stream1_IRQHandler(void)
+{
+    HAL_DMA_IRQHandler(&hdma_sai_tx);
+}
+
+/**
+ * @brief This function handles SAI2 global interrupt.
+ */
+void SAI2_IRQHandler(void)
+{
+    HAL_SAI_IRQHandler(&hsai_rx);
+    HAL_SAI_IRQHandler(&hsai_tx);
 }
