@@ -82,6 +82,23 @@ static volatile uint8_t dsp_duck_enabled = 0;
 static volatile uint8_t dsp_normalizer_enabled = 0;
 
 /* ==========================================================================
+ * Presets (EQ profiles)
+ * 0 = OFFICE: Neutral with slight high clarity
+ * 1 = FULL: Enhanced bass and treble ("fun" curve)
+ * 2 = NIGHT: Reduced bass, volume capped at 60%
+ * 3 = SPEECH: Voice clarity, high-pass + mid boost
+ * ========================================================================== */
+typedef enum {
+    PRESET_OFFICE = 0,
+    PRESET_FULL   = 1,
+    PRESET_NIGHT  = 2,
+    PRESET_SPEECH = 3
+} DspPreset;
+
+static volatile uint8_t current_preset = PRESET_OFFICE;
+#define PRESET_NIGHT_VOLUME_CAP 60  /* Max trim for NIGHT mode */
+
+/* ==========================================================================
  * Volume / Device Trim
  * ==========================================================================
  * Device Trim is separate from phone volume (hardware buttons).
@@ -150,10 +167,18 @@ static float trim_to_gain(uint8_t trim)
 /**
  * @brief  Calculate target gain from trim value
  *         Headroom is fixed, not dependent on active effects
+ *         NIGHT preset applies volume cap
  */
 static void update_target_gain(void)
 {
-    target_gain = trim_to_gain(device_trim_value);
+    uint8_t effective_trim = device_trim_value;
+
+    /* Apply volume cap for NIGHT mode */
+    if (current_preset == PRESET_NIGHT && effective_trim > PRESET_NIGHT_VOLUME_CAP) {
+        effective_trim = PRESET_NIGHT_VOLUME_CAP;
+    }
+
+    target_gain = trim_to_gain(effective_trim);
 }
 
 /* Biquad filter state for loudness (stereo - L and R channels) */
@@ -212,6 +237,56 @@ static float duck_target_gain = 1.0f;
 static float drc_envelope = 0.0f;      /* Current envelope level */
 static float drc_gain_smooth = 1.0f;   /* Smoothed gain reduction */
 
+/* ==========================================================================
+ * Preset EQ Coefficients
+ * ========================================================================== */
+
+/* Preset filter states (up to 2 stages per preset) */
+static BiquadState preset_eq1_L = {0};
+static BiquadState preset_eq1_R = {0};
+static BiquadState preset_eq2_L = {0};
+static BiquadState preset_eq2_R = {0};
+
+/* OFFICE: High-shelf +1.5dB @ 6kHz (subtle clarity) */
+static const float preset_office_b0 = 1.128557f;
+static const float preset_office_b1 = -0.947809f;
+static const float preset_office_b2 = 0.264846f;
+static const float preset_office_a1 = -0.762145f;
+static const float preset_office_a2 = 0.207739f;
+
+/* FULL: Low-shelf +4dB @ 120Hz */
+static const float preset_full_bass_b0 = 1.003338f;
+static const float preset_full_bass_b1 = -1.974175f;
+static const float preset_full_bass_b2 = 0.971200f;
+static const float preset_full_bass_a1 = -1.974242f;
+static const float preset_full_bass_a2 = 0.974472f;
+/* FULL: High-shelf +3dB @ 8kHz */
+static const float preset_full_treble_b0 = 1.237922f;
+static const float preset_full_treble_b1 = -0.692061f;
+static const float preset_full_treble_b2 = 0.184899f;
+static const float preset_full_treble_a1 = -0.383231f;
+static const float preset_full_treble_a2 = 0.113991f;
+
+/* NIGHT: Low-shelf -3dB @ 150Hz (reduced bass) */
+static const float preset_night_b0 = 0.996892f;
+static const float preset_night_b1 = -1.960843f;
+static const float preset_night_b2 = 0.964328f;
+static const float preset_night_a1 = -1.960765f;
+static const float preset_night_a2 = 0.961297f;
+
+/* SPEECH: High-pass @ 150Hz */
+static const float preset_speech_hp_b0 = 0.985000f;
+static const float preset_speech_hp_b1 = -1.969999f;
+static const float preset_speech_hp_b2 = 0.985000f;
+static const float preset_speech_hp_a1 = -1.969774f;
+static const float preset_speech_hp_a2 = 0.970224f;
+/* SPEECH: Mid boost +3dB @ 2.5kHz */
+static const float preset_speech_mid_b0 = 1.036752f;
+static const float preset_speech_mid_b1 = -1.707474f;
+static const float preset_speech_mid_b2 = 0.785074f;
+static const float preset_speech_mid_a1 = -1.707474f;
+static const float preset_speech_mid_a2 = 0.821826f;
+
 /* Apply biquad filter to a single sample (generic version) */
 static inline float biquad_process_coef(BiquadState *state, float input,
                                         float b0, float b1, float b2,
@@ -246,6 +321,74 @@ static inline float bass_process(BiquadState *state, float input)
     return biquad_process_coef(state, input,
                                bass_b0, bass_b1, bass_b2,
                                bass_a1, bass_a2);
+}
+
+/* Preset EQ processing - applies preset-specific filters */
+static inline void preset_process(float *left, float *right)
+{
+    switch (current_preset)
+    {
+        case PRESET_OFFICE:
+            /* Single stage: subtle high-shelf */
+            *left  = biquad_process_coef(&preset_eq1_L, *left,
+                        preset_office_b0, preset_office_b1, preset_office_b2,
+                        preset_office_a1, preset_office_a2);
+            *right = biquad_process_coef(&preset_eq1_R, *right,
+                        preset_office_b0, preset_office_b1, preset_office_b2,
+                        preset_office_a1, preset_office_a2);
+            break;
+
+        case PRESET_FULL:
+            /* Two stages: bass boost + treble boost */
+            *left  = biquad_process_coef(&preset_eq1_L, *left,
+                        preset_full_bass_b0, preset_full_bass_b1, preset_full_bass_b2,
+                        preset_full_bass_a1, preset_full_bass_a2);
+            *right = biquad_process_coef(&preset_eq1_R, *right,
+                        preset_full_bass_b0, preset_full_bass_b1, preset_full_bass_b2,
+                        preset_full_bass_a1, preset_full_bass_a2);
+            *left  = biquad_process_coef(&preset_eq2_L, *left,
+                        preset_full_treble_b0, preset_full_treble_b1, preset_full_treble_b2,
+                        preset_full_treble_a1, preset_full_treble_a2);
+            *right = biquad_process_coef(&preset_eq2_R, *right,
+                        preset_full_treble_b0, preset_full_treble_b1, preset_full_treble_b2,
+                        preset_full_treble_a1, preset_full_treble_a2);
+            break;
+
+        case PRESET_NIGHT:
+            /* Single stage: reduced bass */
+            *left  = biquad_process_coef(&preset_eq1_L, *left,
+                        preset_night_b0, preset_night_b1, preset_night_b2,
+                        preset_night_a1, preset_night_a2);
+            *right = biquad_process_coef(&preset_eq1_R, *right,
+                        preset_night_b0, preset_night_b1, preset_night_b2,
+                        preset_night_a1, preset_night_a2);
+            break;
+
+        case PRESET_SPEECH:
+            /* Two stages: high-pass + mid boost */
+            *left  = biquad_process_coef(&preset_eq1_L, *left,
+                        preset_speech_hp_b0, preset_speech_hp_b1, preset_speech_hp_b2,
+                        preset_speech_hp_a1, preset_speech_hp_a2);
+            *right = biquad_process_coef(&preset_eq1_R, *right,
+                        preset_speech_hp_b0, preset_speech_hp_b1, preset_speech_hp_b2,
+                        preset_speech_hp_a1, preset_speech_hp_a2);
+            *left  = biquad_process_coef(&preset_eq2_L, *left,
+                        preset_speech_mid_b0, preset_speech_mid_b1, preset_speech_mid_b2,
+                        preset_speech_mid_a1, preset_speech_mid_a2);
+            *right = biquad_process_coef(&preset_eq2_R, *right,
+                        preset_speech_mid_b0, preset_speech_mid_b1, preset_speech_mid_b2,
+                        preset_speech_mid_a1, preset_speech_mid_a2);
+            break;
+    }
+}
+
+/* Reset preset filter states (call when changing presets) */
+static void reset_preset_filters(void)
+{
+    memset(&preset_eq1_L, 0, sizeof(preset_eq1_L));
+    memset(&preset_eq1_R, 0, sizeof(preset_eq1_R));
+    memset(&preset_eq2_L, 0, sizeof(preset_eq2_L));
+    memset(&preset_eq2_R, 0, sizeof(preset_eq2_R));
 }
 
 /* DRC/Compressor process - returns smoothed gain factor */
@@ -840,8 +983,17 @@ static void Process_GATT_Command(const char *line)
         switch (cmd_type)
         {
             case 0x01:  /* Set Preset */
-                printf("[DSP] Set preset: %d\r\n", cmd_value);
-                /* TODO: Apply preset to DSP */
+                {
+                    const char *preset_names[] = {"OFFICE", "FULL", "NIGHT", "SPEECH"};
+                    if (cmd_value <= PRESET_SPEECH) {
+                        current_preset = cmd_value;
+                        reset_preset_filters();
+                        update_target_gain();  /* Recalculate gain (NIGHT mode has volume cap) */
+                        printf("[DSP] Preset: %s\r\n", preset_names[cmd_value]);
+                    } else {
+                        printf("[DSP] Invalid preset: %d\r\n", cmd_value);
+                    }
+                }
                 break;
             case 0x02:  /* Set Loudness */
                 printf("[DSP] Loudness: %s\r\n", cmd_value ? "ON" : "OFF");
@@ -873,7 +1025,7 @@ static void Process_GATT_Command(const char *line)
                 {
                     uint8_t trim = cmd_value > 100 ? 100 : cmd_value;
                     device_trim_value = trim;
-                    update_target_gain();
+                    update_target_gain();  /* NIGHT mode cap applied here */
                     printf("[DSP] Trim: %d%% (target gain: %.3f)\r\n",
                            trim, target_gain);
                 }
@@ -927,23 +1079,27 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
 
         /* ==========================================================
          * DSP Chain (order matters!)
-         * 1. Loudness (low-shelf +6dB @ 150Hz)
-         * 2. Bass Boost (low-shelf +8dB @ 100Hz)
-         * 3. Normalizer/DRC
-         * 4. Volume/Trim
-         * 5. Duck
-         * 6. Mute
-         * 7. Limiter (soft clip)
+         * 1. Preset EQ (OFFICE/FULL/NIGHT/SPEECH)
+         * 2. Loudness overlay (+6dB @ 150Hz)
+         * 3. Bass Boost (+8dB @ 100Hz)
+         * 4. Normalizer/DRC
+         * 5. Volume/Trim
+         * 6. Duck
+         * 7. Mute
+         * 8. Limiter (soft clip)
          * ========================================================== */
 
-        /* 1. Loudness: Low-shelf bass boost +6dB @ 150Hz */
+        /* 1. Preset EQ */
+        preset_process(&left_out, &right_out);
+
+        /* 2. Loudness overlay: Low-shelf bass boost +6dB @ 150Hz */
         if (dsp_loudness_enabled)
         {
             left_out  = loudness_process(&loudness_state_L, left_out);
             right_out = loudness_process(&loudness_state_R, right_out);
         }
 
-        /* 2. Bass Boost: Low-shelf +8dB @ 100Hz */
+        /* 3. Bass Boost: Low-shelf +8dB @ 100Hz */
         if (dsp_bass_boost_enabled)
         {
             left_out  = bass_process(&bass_state_L, left_out);
