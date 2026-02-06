@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 /* Audio Configuration -------------------------------------------------------*/
 #define AUDIO_SAMPLE_RATE       44100   /* Match ESP32 default */
@@ -77,6 +78,81 @@ static volatile uint8_t dsp_loudness_enabled = 0;
 static volatile uint8_t dsp_mute_enabled = 0;
 static volatile uint8_t dsp_bypass_enabled = 0;
 static volatile uint8_t dsp_bass_boost_enabled = 0;
+
+/* ==========================================================================
+ * Volume / Device Trim
+ * ==========================================================================
+ * Device Trim is separate from phone volume (hardware buttons).
+ * Used for: headroom management, safe caps, ducking, protection.
+ *
+ * Mapping (perceptual/logarithmic):
+ *   100 →  0 dB (unity)
+ *    80 → -6 dB
+ *    60 → -12 dB
+ *    40 → -20 dB
+ *    20 → -35 dB
+ *     0 → -60 dB (near-mute)
+ * ========================================================================== */
+
+static volatile uint8_t device_trim_value = 100; /* 0-100, default unity (0dB) */
+static float current_gain = 0.3548f;             /* Current gain (smoothed) */
+static float target_gain = 0.3548f;              /* Target gain from trim value */
+
+/* Fixed headroom to accommodate all DSP effects without volume jumps
+ * -9dB provides room for:
+ *   - Loudness: +6dB bass boost
+ *   - Bass Boost: +6-8dB
+ *   - Combined effects with some margin
+ * This headroom is ALWAYS applied, so enabling/disabling effects
+ * doesn't cause perceived volume changes (effects "fill" the headroom)
+ */
+#define FIXED_HEADROOM_DB   -9.0f
+#define FIXED_HEADROOM_LIN  0.3548f  /* 10^(-9/20) */
+
+/* Smooth ramping coefficient (~10ms ramp @ 44.1kHz with 256 sample buffers) */
+#define GAIN_RAMP_COEFF     0.05f
+
+/**
+ * @brief  Convert trim value (0-100) to linear gain
+ *         Uses piecewise linear approximation of logarithmic curve
+ *         Includes fixed headroom for DSP effects
+ */
+static float trim_to_gain(uint8_t trim)
+{
+    /* Piecewise linear dB mapping, then convert to linear */
+    float db;
+    if (trim >= 100) {
+        db = 0.0f;
+    } else if (trim >= 80) {
+        /* 100→0dB, 80→-6dB: slope = -6/20 = -0.3 dB per unit */
+        db = (trim - 100) * 0.3f;
+    } else if (trim >= 60) {
+        /* 80→-6dB, 60→-12dB: slope = -6/20 = -0.3 dB per unit */
+        db = -6.0f + (trim - 80) * 0.3f;
+    } else if (trim >= 40) {
+        /* 60→-12dB, 40→-20dB: slope = -8/20 = -0.4 dB per unit */
+        db = -12.0f + (trim - 60) * 0.4f;
+    } else if (trim >= 20) {
+        /* 40→-20dB, 20→-35dB: slope = -15/20 = -0.75 dB per unit */
+        db = -20.0f + (trim - 40) * 0.75f;
+    } else {
+        /* 20→-35dB, 0→-60dB: slope = -25/20 = -1.25 dB per unit */
+        db = -35.0f + (trim - 20) * 1.25f;
+    }
+
+    /* Add fixed headroom and convert dB to linear */
+    db += FIXED_HEADROOM_DB;
+    return powf(10.0f, db / 20.0f);
+}
+
+/**
+ * @brief  Calculate target gain from trim value
+ *         Headroom is fixed, not dependent on active effects
+ */
+static void update_target_gain(void)
+{
+    target_gain = trim_to_gain(device_trim_value);
+}
 
 /* Biquad filter state for loudness (stereo - L and R channels) */
 /* Low-shelf filter: boost bass frequencies (+6dB @ 100Hz) */
@@ -691,9 +767,14 @@ static void Process_GATT_Command(const char *line)
                 printf("[DSP] Mute: %s\r\n", cmd_value ? "ON" : "OFF");
                 dsp_mute_enabled = cmd_value ? 1 : 0;
                 break;
-            case 0x07:  /* Set Volume */
-                printf("[DSP] Volume: %d%%\r\n", cmd_value);
-                /* TODO: Apply volume */
+            case 0x07:  /* Set Volume / Device Trim */
+                {
+                    uint8_t trim = cmd_value > 100 ? 100 : cmd_value;
+                    device_trim_value = trim;
+                    update_target_gain();
+                    printf("[DSP] Trim: %d%% (target gain: %.3f)\r\n",
+                           trim, target_gain);
+                }
                 break;
             case 0x08:  /* Set Bypass */
                 printf("[DSP] Bypass: %s\r\n", cmd_value ? "ON" : "OFF");
@@ -724,6 +805,9 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
     /* Process stereo samples (L, R, L, R, ...) */
     for (uint16_t i = 0; i < samples; i += 2)
     {
+        /* Smooth gain ramping - approach target gain gradually */
+        current_gain += (target_gain - current_gain) * GAIN_RAMP_COEFF;
+
         /* Get input samples as float (-1.0 to 1.0 range) */
         float left_in  = (float)rx_buf[i]     / 32768.0f;
         float right_in = (float)rx_buf[i + 1] / 32768.0f;
@@ -740,7 +824,11 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
             right_out = biquad_process(&loudness_state_R, right_out);
         }
 
-        /* 2. Mute: Zero output */
+        /* 2. Apply volume/trim with smooth ramping */
+        left_out  *= current_gain;
+        right_out *= current_gain;
+
+        /* 3. Mute: Zero output (after gain for smooth mute) */
         if (dsp_mute_enabled)
         {
             left_out  = 0.0f;
