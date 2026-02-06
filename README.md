@@ -11,6 +11,8 @@ This project implements a DSP audio engine that sits between a Bluetooth audio s
 Control commands are received via BLE GATT on the ESP32, which relays them over UART to the STM32.
 
 ```
+Current setup (ESP32 A2DP):
+
 ┌──────────┐   Bluetooth   ┌─────────┐   I2S      ┌────────────┐   I2S     ┌──────────┐
 │  Phone   │──────A2DP────>│  ESP32  │──────────>│  STM32H753 │─────────>│ PCM5102A │
 │          │               │         │            │ DSP Engine │          │   DAC    │
@@ -18,6 +20,20 @@ Control commands are received via BLE GATT on the ESP32, which relays them over 
 │   App    │──────────────>│         │──────────>│            │          │          │
 └──────────┘               └─────────┘            └────────────┘          └──────────┘
 ```
+
+```
+Planned setup (BM83 A2DP):
+
+┌──────────┐   Bluetooth   ┌─────────────────┐   I2S      ┌────────────┐   I2S     ┌──────────┐
+│  Phone   │──────A2DP────>│ BM83SM1-00AB    │──────────>│  STM32H753 │─────────>│ PCM5102A │
+│          │               │ (I2S master,    │            │ DSP Engine │          │   DAC    │
+│          │               │  crystal clock) │            │            │          │          │
+│  42dB    │   BLE GATT    ├─────────────────┤   UART     │            │          │          │
+│   App    │──────────────>│     ESP32       │──────────>│            │          │          │
+└──────────┘               └─────────────────┘            └────────────┘          └──────────┘
+```
+
+The BM83 runs as a standard A2DP sink out-of-the-box (no custom firmware) with a crystal-driven I2S master clock for stable audio. The ESP32 handles BLE GATT control (and potentially a display) — easy to program and no expensive development SDK required, making it practical for small production batches.
 
 ## Features
 
