@@ -60,6 +60,14 @@ volatile uint16_t rx_head = 0;
 volatile uint16_t rx_tail = 0;
 uint8_t rx_byte;  // Single byte for UART interrupt
 
+/* Line buffer for GATT commands from ESP32 */
+#define LINE_BUFFER_SIZE 128
+char line_buffer[LINE_BUFFER_SIZE];
+uint16_t line_pos = 0;
+
+/* GATT command handler - called when complete line received */
+static void Process_GATT_Command(const char *line);
+
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -240,12 +248,30 @@ int main(void)
             last_status_time = now;
         }
 
-        /* Process ESP32 commands */
-        if (rx_head != rx_tail)
+        /* Process ESP32 UART data - accumulate into line buffer */
+        while (rx_head != rx_tail)
         {
             uint8_t data = rx_buffer[rx_tail];
             rx_tail = (rx_tail + 1) % RX_BUFFER_SIZE;
-            printf("[ESP32] Received: 0x%02X\r\n", data);
+
+            if (data == '\n')
+            {
+                /* End of line - process command */
+                line_buffer[line_pos] = '\0';
+                if (line_pos > 0 && line_buffer[line_pos - 1] == '\r')
+                {
+                    line_buffer[line_pos - 1] = '\0';  /* Remove \r */
+                }
+                if (line_pos > 0)
+                {
+                    Process_GATT_Command(line_buffer);
+                }
+                line_pos = 0;
+            }
+            else if (line_pos < LINE_BUFFER_SIZE - 1)
+            {
+                line_buffer[line_pos++] = (char)data;
+            }
         }
 
         /* Small delay to prevent tight loop when no audio */
@@ -523,6 +549,108 @@ static const int16_t sine_table[256] = {
     -4808, -4011, -3212, -2410, -1608, -804
 };
 static uint32_t sine_phase = 0;
+
+/**
+ * @brief  Parse hex string to bytes
+ * @param  hex: Input hex string (e.g., "0164")
+ * @param  out: Output byte array
+ * @param  max_len: Maximum bytes to parse
+ * @retval Number of bytes parsed
+ */
+static int hex_to_bytes(const char *hex, uint8_t *out, int max_len)
+{
+    int len = 0;
+    while (*hex && *(hex + 1) && len < max_len)
+    {
+        char byte_str[3] = {hex[0], hex[1], '\0'};
+        out[len++] = (uint8_t)strtol(byte_str, NULL, 16);
+        hex += 2;
+    }
+    return len;
+}
+
+/**
+ * @brief  Process GATT command received from ESP32
+ *         Format: GATT:<characteristic>:<hex_data>
+ *         Example: GATT:CTRL:0102 (Set preset to NIGHT)
+ * @param  line: Complete line without \r\n
+ */
+static void Process_GATT_Command(const char *line)
+{
+    /* Check if it's a GATT command */
+    if (strncmp(line, "GATT:", 5) != 0)
+    {
+        printf("[ESP32] %s\r\n", line);
+        return;
+    }
+
+    /* Parse: GATT:<char>:<hex> */
+    const char *char_start = line + 5;
+    const char *colon = strchr(char_start, ':');
+    if (!colon)
+    {
+        printf("[ESP32] Invalid GATT format: %s\r\n", line);
+        return;
+    }
+
+    /* Extract characteristic name */
+    int char_len = colon - char_start;
+    char char_name[32];
+    if (char_len >= (int)sizeof(char_name)) char_len = sizeof(char_name) - 1;
+    strncpy(char_name, char_start, char_len);
+    char_name[char_len] = '\0';
+
+    /* Extract hex data */
+    const char *hex_data = colon + 1;
+    uint8_t cmd_bytes[16];
+    int cmd_len = hex_to_bytes(hex_data, cmd_bytes, sizeof(cmd_bytes));
+
+    /* Log the command */
+    printf("[GATT] %s:", char_name);
+    for (int i = 0; i < cmd_len; i++)
+    {
+        printf(" %02X", cmd_bytes[i]);
+    }
+    printf("\r\n");
+
+    /* Handle specific commands */
+    if (strcmp(char_name, "CTRL") == 0 && cmd_len >= 2)
+    {
+        uint8_t cmd_type = cmd_bytes[0];
+        uint8_t cmd_value = cmd_bytes[1];
+
+        switch (cmd_type)
+        {
+            case 0x01:  /* Set Preset */
+                printf("[DSP] Set preset: %d\r\n", cmd_value);
+                /* TODO: Apply preset to DSP */
+                break;
+            case 0x02:  /* Set Loudness */
+                printf("[DSP] Loudness: %s\r\n", cmd_value ? "ON" : "OFF");
+                /* TODO: Apply loudness */
+                break;
+            case 0x04:  /* Set Mute */
+                printf("[DSP] Mute: %s\r\n", cmd_value ? "ON" : "OFF");
+                /* TODO: Apply mute */
+                break;
+            case 0x07:  /* Set Volume */
+                printf("[DSP] Volume: %d%%\r\n", cmd_value);
+                /* TODO: Apply volume */
+                break;
+            case 0x08:  /* Set Bypass */
+                printf("[DSP] Bypass: %s\r\n", cmd_value ? "ON" : "OFF");
+                /* TODO: Apply bypass */
+                break;
+            case 0x09:  /* Set Bass Boost */
+                printf("[DSP] Bass Boost: %s\r\n", cmd_value ? "ON" : "OFF");
+                /* TODO: Apply bass boost */
+                break;
+            default:
+                printf("[DSP] Unknown command: 0x%02X\r\n", cmd_type);
+                break;
+        }
+    }
+}
 
 static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
 {
