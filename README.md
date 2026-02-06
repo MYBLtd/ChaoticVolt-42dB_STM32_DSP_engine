@@ -398,7 +398,7 @@ Fixed in v0.3.0. If still occurring, ensure you're using the fixed headroom appr
 
 ## License
 
-MIT License - See LICENSE file.
+PolyForm Noncommercial 1.0.0 - See [LICENSE.txt](LICENSE.txt). Commercial use requires explicit written permission.
 
 ## Author
 
