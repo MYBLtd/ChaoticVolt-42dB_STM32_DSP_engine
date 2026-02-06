@@ -68,6 +68,53 @@ uint16_t line_pos = 0;
 /* GATT command handler - called when complete line received */
 static void Process_GATT_Command(const char *line);
 
+/* ==========================================================================
+ * DSP Processing State
+ * ========================================================================== */
+
+/* DSP feature flags */
+static volatile uint8_t dsp_loudness_enabled = 0;
+static volatile uint8_t dsp_mute_enabled = 0;
+static volatile uint8_t dsp_bypass_enabled = 0;
+static volatile uint8_t dsp_bass_boost_enabled = 0;
+
+/* Biquad filter state for loudness (stereo - L and R channels) */
+/* Low-shelf filter: boost bass frequencies (+6dB @ 100Hz) */
+typedef struct {
+    float x1, x2;  /* Input history */
+    float y1, y2;  /* Output history */
+} BiquadState;
+
+static BiquadState loudness_state_L = {0};
+static BiquadState loudness_state_R = {0};
+
+/* Biquad coefficients for low-shelf filter
+ * Calculated for: Fs=44100Hz, Fc=150Hz, Gain=+6dB, Q=0.707
+ * Using Audio EQ Cookbook formula (Robert Bristow-Johnson) */
+static const float loudness_b0 = 1.005260f;
+static const float loudness_b1 = -1.974408f;
+static const float loudness_b2 = 0.969786f;
+static const float loudness_a1 = -1.974567f;
+static const float loudness_a2 = 0.974887f;
+
+/* Apply biquad filter to a single sample */
+static inline float biquad_process(BiquadState *state, float input)
+{
+    float output = loudness_b0 * input
+                 + loudness_b1 * state->x1
+                 + loudness_b2 * state->x2
+                 - loudness_a1 * state->y1
+                 - loudness_a2 * state->y2;
+
+    /* Shift history */
+    state->x2 = state->x1;
+    state->x1 = input;
+    state->y2 = state->y1;
+    state->y1 = output;
+
+    return output;
+}
+
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -398,12 +445,17 @@ static void MX_DMA_Init(void)
     __HAL_RCC_DMA1_CLK_ENABLE();
 
     /* DMA interrupt init */
+    /* Audio DMA at lower priority (2) so UART can interrupt */
     /* DMA1_Stream0_IRQn - SAI2_A RX */
-    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
     /* DMA1_Stream1_IRQn - SAI2_B TX */
-    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+    /* UART2 interrupt at highest priority (0) for reliable command reception */
+    HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
 }
 
 /**
@@ -613,8 +665,9 @@ static void Process_GATT_Command(const char *line)
     }
     printf("\r\n");
 
-    /* Handle specific commands */
-    if (strcmp(char_name, "CTRL") == 0 && cmd_len >= 2)
+    /* Handle specific commands - accept any characteristic that ends with "CTRL" or "TRL"
+     * to handle occasional UART byte loss */
+    if ((strstr(char_name, "CTRL") != NULL || strstr(char_name, "TRL") != NULL) && cmd_len >= 2)
     {
         uint8_t cmd_type = cmd_bytes[0];
         uint8_t cmd_value = cmd_bytes[1];
@@ -627,11 +680,16 @@ static void Process_GATT_Command(const char *line)
                 break;
             case 0x02:  /* Set Loudness */
                 printf("[DSP] Loudness: %s\r\n", cmd_value ? "ON" : "OFF");
-                /* TODO: Apply loudness */
+                dsp_loudness_enabled = cmd_value ? 1 : 0;
+                if (!cmd_value) {
+                    /* Reset filter state when disabling to avoid clicks */
+                    memset(&loudness_state_L, 0, sizeof(loudness_state_L));
+                    memset(&loudness_state_R, 0, sizeof(loudness_state_R));
+                }
                 break;
             case 0x04:  /* Set Mute */
                 printf("[DSP] Mute: %s\r\n", cmd_value ? "ON" : "OFF");
-                /* TODO: Apply mute */
+                dsp_mute_enabled = cmd_value ? 1 : 0;
                 break;
             case 0x07:  /* Set Volume */
                 printf("[DSP] Volume: %d%%\r\n", cmd_value);
@@ -639,11 +697,11 @@ static void Process_GATT_Command(const char *line)
                 break;
             case 0x08:  /* Set Bypass */
                 printf("[DSP] Bypass: %s\r\n", cmd_value ? "ON" : "OFF");
-                /* TODO: Apply bypass */
+                dsp_bypass_enabled = cmd_value ? 1 : 0;
                 break;
             case 0x09:  /* Set Bass Boost */
                 printf("[DSP] Bass Boost: %s\r\n", cmd_value ? "ON" : "OFF");
-                /* TODO: Apply bass boost */
+                dsp_bass_boost_enabled = cmd_value ? 1 : 0;
                 break;
             default:
                 printf("[DSP] Unknown command: 0x%02X\r\n", cmd_type);
@@ -656,20 +714,49 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
 {
     audio_process_count++;
 
-#if 1  /* Set to 1 for passthrough, 0 for test tone */
-    /* Simple passthrough - copy RX to TX */
-    memcpy(tx_buf, rx_buf, samples * sizeof(int16_t));
-#else
-    /* Generate 1kHz sine wave for testing TX path */
-    /* At 44100Hz, 1kHz = 44.1 samples per cycle, use phase increment */
+    /* Bypass mode: direct passthrough without any processing */
+    if (dsp_bypass_enabled)
+    {
+        memcpy(tx_buf, rx_buf, samples * sizeof(int16_t));
+        return;
+    }
+
+    /* Process stereo samples (L, R, L, R, ...) */
     for (uint16_t i = 0; i < samples; i += 2)
     {
-        int16_t sample = sine_table[(sine_phase >> 8) & 0xFF];
-        tx_buf[i] = sample;      /* Left */
-        tx_buf[i+1] = sample;    /* Right */
-        sine_phase += 1483;  /* ~1kHz at 44.1kHz: 256*65536/44100 ≈ 380, for 1kHz: 380*~4 */
+        /* Get input samples as float (-1.0 to 1.0 range) */
+        float left_in  = (float)rx_buf[i]     / 32768.0f;
+        float right_in = (float)rx_buf[i + 1] / 32768.0f;
+
+        float left_out  = left_in;
+        float right_out = right_in;
+
+        /* Apply DSP chain */
+
+        /* 1. Loudness: Low-shelf bass boost */
+        if (dsp_loudness_enabled)
+        {
+            left_out  = biquad_process(&loudness_state_L, left_out);
+            right_out = biquad_process(&loudness_state_R, right_out);
+        }
+
+        /* 2. Mute: Zero output */
+        if (dsp_mute_enabled)
+        {
+            left_out  = 0.0f;
+            right_out = 0.0f;
+        }
+
+        /* Soft clipping to prevent harsh distortion */
+        if (left_out > 1.0f) left_out = 1.0f;
+        if (left_out < -1.0f) left_out = -1.0f;
+        if (right_out > 1.0f) right_out = 1.0f;
+        if (right_out < -1.0f) right_out = -1.0f;
+
+        /* Convert back to 16-bit integer */
+        tx_buf[i]     = (int16_t)(left_out  * 32767.0f);
+        tx_buf[i + 1] = (int16_t)(right_out * 32767.0f);
     }
-#endif
 }
 
 /**
