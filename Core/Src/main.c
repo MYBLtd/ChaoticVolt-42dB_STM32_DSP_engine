@@ -78,6 +78,8 @@ static volatile uint8_t dsp_loudness_enabled = 0;
 static volatile uint8_t dsp_mute_enabled = 0;
 static volatile uint8_t dsp_bypass_enabled = 0;
 static volatile uint8_t dsp_bass_boost_enabled = 0;
+static volatile uint8_t dsp_duck_enabled = 0;
+static volatile uint8_t dsp_normalizer_enabled = 0;
 
 /* ==========================================================================
  * Volume / Device Trim
@@ -173,14 +175,53 @@ static const float loudness_b2 = 0.969786f;
 static const float loudness_a1 = -1.974567f;
 static const float loudness_a2 = 0.974887f;
 
-/* Apply biquad filter to a single sample */
-static inline float biquad_process(BiquadState *state, float input)
+/* ==========================================================================
+ * Bass Boost Filter (+8dB @ 100Hz)
+ * ========================================================================== */
+static BiquadState bass_state_L = {0};
+static BiquadState bass_state_R = {0};
+
+/* Bass Boost: Low-shelf +8dB @ 100Hz, S=0.7 */
+static const float bass_b0 = 1.005677f;
+static const float bass_b1 = -1.980528f;
+static const float bass_b2 = 0.975169f;
+static const float bass_a1 = -1.980624f;
+static const float bass_a2 = 0.980750f;
+
+/* ==========================================================================
+ * Duck Mode (-12dB gain reduction)
+ * ========================================================================== */
+#define DUCK_GAIN_LIN       0.251189f  /* 10^(-12/20) = ~25% volume */
+static float duck_current_gain = 1.0f;
+static float duck_target_gain = 1.0f;
+
+/* ==========================================================================
+ * Normalizer / DRC (Dynamic Range Compression)
+ * Tuned for transparent leveling without "pumping"
+ * Threshold: -12dB (only compress loud parts)
+ * Ratio: 2:1 (gentle compression)
+ * Attack: 10ms, Release: 80ms (faster recovery)
+ * Makeup: +3dB (subtle boost)
+ * ========================================================================== */
+#define DRC_THRESHOLD_LIN   0.251189f  /* 10^(-12/20) = -12dB */
+#define DRC_RATIO           2.0f       /* Gentle 2:1 ratio */
+#define DRC_ATTACK_COEF     0.002268f  /* ~10ms attack */
+#define DRC_RELEASE_COEF    0.000284f  /* ~80ms release */
+#define DRC_MAKEUP_LIN      1.412538f  /* +3dB makeup gain */
+
+static float drc_envelope = 0.0f;      /* Current envelope level */
+static float drc_gain_smooth = 1.0f;   /* Smoothed gain reduction */
+
+/* Apply biquad filter to a single sample (generic version) */
+static inline float biquad_process_coef(BiquadState *state, float input,
+                                        float b0, float b1, float b2,
+                                        float a1, float a2)
 {
-    float output = loudness_b0 * input
-                 + loudness_b1 * state->x1
-                 + loudness_b2 * state->x2
-                 - loudness_a1 * state->y1
-                 - loudness_a2 * state->y2;
+    float output = b0 * input
+                 + b1 * state->x1
+                 + b2 * state->x2
+                 - a1 * state->y1
+                 - a2 * state->y2;
 
     /* Shift history */
     state->x2 = state->x1;
@@ -189,6 +230,54 @@ static inline float biquad_process(BiquadState *state, float input)
     state->y1 = output;
 
     return output;
+}
+
+/* Loudness filter wrapper */
+static inline float loudness_process(BiquadState *state, float input)
+{
+    return biquad_process_coef(state, input,
+                               loudness_b0, loudness_b1, loudness_b2,
+                               loudness_a1, loudness_a2);
+}
+
+/* Bass Boost filter wrapper */
+static inline float bass_process(BiquadState *state, float input)
+{
+    return biquad_process_coef(state, input,
+                               bass_b0, bass_b1, bass_b2,
+                               bass_a1, bass_a2);
+}
+
+/* DRC/Compressor process - returns smoothed gain factor */
+static inline float drc_process(float input_level)
+{
+    /* Peak detection with attack/release envelope */
+    float abs_level = (input_level < 0) ? -input_level : input_level;
+
+    if (abs_level > drc_envelope) {
+        /* Attack: fast rise */
+        drc_envelope += DRC_ATTACK_COEF * (abs_level - drc_envelope);
+    } else {
+        /* Release: slow fall */
+        drc_envelope += DRC_RELEASE_COEF * (abs_level - drc_envelope);
+    }
+
+    /* Calculate target gain */
+    float target_drc_gain;
+    if (drc_envelope > DRC_THRESHOLD_LIN) {
+        /* Above threshold: apply compression */
+        float excess_ratio = drc_envelope / DRC_THRESHOLD_LIN;
+        float compressed = DRC_THRESHOLD_LIN * powf(excess_ratio, 1.0f / DRC_RATIO);
+        target_drc_gain = (compressed / drc_envelope) * DRC_MAKEUP_LIN;
+    } else {
+        /* Below threshold: just apply makeup gain */
+        target_drc_gain = DRC_MAKEUP_LIN;
+    }
+
+    /* Smooth the gain changes to avoid artifacts */
+    drc_gain_smooth += 0.01f * (target_drc_gain - drc_gain_smooth);
+
+    return drc_gain_smooth;
 }
 
 /* Private function prototypes -----------------------------------------------*/
@@ -767,6 +856,19 @@ static void Process_GATT_Command(const char *line)
                 printf("[DSP] Mute: %s\r\n", cmd_value ? "ON" : "OFF");
                 dsp_mute_enabled = cmd_value ? 1 : 0;
                 break;
+            case 0x05:  /* Set Audio Duck */
+                printf("[DSP] Duck: %s\r\n", cmd_value ? "ON (-12dB)" : "OFF");
+                dsp_duck_enabled = cmd_value ? 1 : 0;
+                duck_target_gain = cmd_value ? DUCK_GAIN_LIN : 1.0f;
+                break;
+            case 0x06:  /* Set Normalizer/DRC */
+                printf("[DSP] Normalizer: %s\r\n", cmd_value ? "ON" : "OFF");
+                dsp_normalizer_enabled = cmd_value ? 1 : 0;
+                if (!cmd_value) {
+                    /* Reset DRC envelope when disabling */
+                    drc_envelope = 0.0f;
+                }
+                break;
             case 0x07:  /* Set Volume / Device Trim */
                 {
                     uint8_t trim = cmd_value > 100 ? 100 : cmd_value;
@@ -781,8 +883,13 @@ static void Process_GATT_Command(const char *line)
                 dsp_bypass_enabled = cmd_value ? 1 : 0;
                 break;
             case 0x09:  /* Set Bass Boost */
-                printf("[DSP] Bass Boost: %s\r\n", cmd_value ? "ON" : "OFF");
+                printf("[DSP] Bass Boost: %s\r\n", cmd_value ? "ON (+8dB)" : "OFF");
                 dsp_bass_boost_enabled = cmd_value ? 1 : 0;
+                if (!cmd_value) {
+                    /* Reset filter state when disabling to avoid clicks */
+                    memset(&bass_state_L, 0, sizeof(bass_state_L));
+                    memset(&bass_state_R, 0, sizeof(bass_state_R));
+                }
                 break;
             default:
                 printf("[DSP] Unknown command: 0x%02X\r\n", cmd_type);
@@ -808,6 +915,9 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
         /* Smooth gain ramping - approach target gain gradually */
         current_gain += (target_gain - current_gain) * GAIN_RAMP_COEFF;
 
+        /* Smooth duck gain ramping */
+        duck_current_gain += (duck_target_gain - duck_current_gain) * GAIN_RAMP_COEFF;
+
         /* Get input samples as float (-1.0 to 1.0 range) */
         float left_in  = (float)rx_buf[i]     / 32768.0f;
         float right_in = (float)rx_buf[i + 1] / 32768.0f;
@@ -815,27 +925,60 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
         float left_out  = left_in;
         float right_out = right_in;
 
-        /* Apply DSP chain */
+        /* ==========================================================
+         * DSP Chain (order matters!)
+         * 1. Loudness (low-shelf +6dB @ 150Hz)
+         * 2. Bass Boost (low-shelf +8dB @ 100Hz)
+         * 3. Normalizer/DRC
+         * 4. Volume/Trim
+         * 5. Duck
+         * 6. Mute
+         * 7. Limiter (soft clip)
+         * ========================================================== */
 
-        /* 1. Loudness: Low-shelf bass boost */
+        /* 1. Loudness: Low-shelf bass boost +6dB @ 150Hz */
         if (dsp_loudness_enabled)
         {
-            left_out  = biquad_process(&loudness_state_L, left_out);
-            right_out = biquad_process(&loudness_state_R, right_out);
+            left_out  = loudness_process(&loudness_state_L, left_out);
+            right_out = loudness_process(&loudness_state_R, right_out);
         }
 
-        /* 2. Apply volume/trim with smooth ramping */
+        /* 2. Bass Boost: Low-shelf +8dB @ 100Hz */
+        if (dsp_bass_boost_enabled)
+        {
+            left_out  = bass_process(&bass_state_L, left_out);
+            right_out = bass_process(&bass_state_R, right_out);
+        }
+
+        /* 3. Normalizer/DRC: Dynamic range compression */
+        if (dsp_normalizer_enabled)
+        {
+            /* Use max of L/R for envelope detection (linked stereo) */
+            float peak = (left_out > right_out) ? left_out : right_out;
+            if (-left_out > peak) peak = -left_out;
+            if (-right_out > peak) peak = -right_out;
+
+            float drc_gain = drc_process(peak);
+            left_out  *= drc_gain;
+            right_out *= drc_gain;
+        }
+
+        /* 4. Apply volume/trim with smooth ramping */
         left_out  *= current_gain;
         right_out *= current_gain;
 
-        /* 3. Mute: Zero output (after gain for smooth mute) */
+        /* 5. Duck: Temporary volume reduction (-12dB) */
+        left_out  *= duck_current_gain;
+        right_out *= duck_current_gain;
+
+        /* 6. Mute: Zero output */
         if (dsp_mute_enabled)
         {
             left_out  = 0.0f;
             right_out = 0.0f;
         }
 
-        /* Soft clipping to prevent harsh distortion */
+        /* 7. Limiter: Soft clipping to prevent harsh distortion */
         if (left_out > 1.0f) left_out = 1.0f;
         if (left_out < -1.0f) left_out = -1.0f;
         if (right_out > 1.0f) right_out = 1.0f;
