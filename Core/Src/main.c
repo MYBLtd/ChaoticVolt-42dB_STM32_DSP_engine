@@ -423,6 +423,41 @@ static inline float drc_process(float input_level)
     return drc_gain_smooth;
 }
 
+/* DMA drift detection and auto-recovery */
+#define DMA_DRIFT_THRESHOLD     50      /* Max allowed drift in samples */
+#define DMA_DRIFT_CHECK_INTERVAL 500    /* Check every 500ms */
+static int16_t dma_initial_offset = 0;  /* Captured after startup */
+static uint8_t dma_offset_captured = 0; /* Flag: initial offset valid */
+static volatile uint32_t dma_resync_count = 0;  /* Total resyncs */
+
+/**
+ * @brief  Restart SAI/DMA to resynchronize RX and TX
+ *         Called when DMA drift exceeds threshold
+ */
+static void SAI_DMA_Resync(void)
+{
+    /* Stop both DMA streams */
+    HAL_SAI_DMAStop(&hsai_rx);
+    HAL_SAI_DMAStop(&hsai_tx);
+
+    /* Clear errors and flush FIFOs */
+    __HAL_SAI_CLEAR_FLAG(&hsai_rx, SAI_FLAG_OVRUDR | SAI_FLAG_AFSDET | SAI_FLAG_LFSDET | SAI_FLAG_WCKCFG);
+    __HAL_SAI_CLEAR_FLAG(&hsai_tx, SAI_FLAG_OVRUDR | SAI_FLAG_AFSDET | SAI_FLAG_LFSDET | SAI_FLAG_WCKCFG);
+    SAI2_Block_A->CR2 |= SAI_xCR2_FFLUSH;
+    SAI2_Block_B->CR2 |= SAI_xCR2_FFLUSH;
+
+    /* Clear buffers */
+    memset(audio_tx_buffer, 0, sizeof(audio_tx_buffer));
+
+    /* Restart DMA */
+    HAL_SAI_Receive_DMA(&hsai_rx, (uint8_t *)audio_rx_buffer, AUDIO_BUFFER_SIZE * 2);
+    HAL_SAI_Transmit_DMA(&hsai_tx, (uint8_t *)audio_tx_buffer, AUDIO_BUFFER_SIZE * 2);
+
+    /* Reset drift tracking */
+    dma_offset_captured = 0;
+    dma_resync_count++;
+}
+
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -555,49 +590,80 @@ int main(void)
     uint32_t last_status_time = 0;
     uint32_t last_buffer_count = 0;
     uint32_t debug_counter = 0;
+    uint32_t last_drift_check = 0;
 
     /* Infinite loop */
     while (1)
     {
         /* Audio processing happens in RX DMA callbacks for lowest latency */
 
-        /* Print status every second */
+        /* DMA drift detection - check every 500ms */
         uint32_t now = HAL_GetTick();
+        if (now - last_drift_check >= DMA_DRIFT_CHECK_INTERVAL && audio_buffer_count > 100)
+        {
+            /* Read both NDTR as close together as possible */
+            uint32_t rx_ndtr = DMA1_Stream0->NDTR;
+            uint32_t tx_ndtr = DMA1_Stream1->NDTR;
+            int16_t current_offset = (int16_t)(tx_ndtr - rx_ndtr);
+
+            if (!dma_offset_captured)
+            {
+                /* Capture initial offset after startup/resync */
+                dma_initial_offset = current_offset;
+                dma_offset_captured = 1;
+            }
+            else
+            {
+                /* Check drift from initial offset (handle wrap-around) */
+                int16_t drift = current_offset - dma_initial_offset;
+                if (drift > 512) drift -= 1024;
+                if (drift < -512) drift += 1024;
+
+                if (drift > DMA_DRIFT_THRESHOLD || drift < -DMA_DRIFT_THRESHOLD)
+                {
+                    printf("[RESYNC] DMA drift=%d (threshold=%d), restarting SAI/DMA (resync #%lu)\r\n",
+                           drift, DMA_DRIFT_THRESHOLD, dma_resync_count + 1);
+                    SAI_DMA_Resync();
+                }
+            }
+            last_drift_check = now;
+        }
+
+        /* Print status every second */
         if (now - last_status_time >= 1000)
         {
             uint32_t buffers_per_sec = audio_buffer_count - last_buffer_count;
             if (audio_buffer_count > 0)
             {
-                printf("[AUDIO] Buffers/sec: %lu, Total: %lu, Overruns: %lu\r\n",
-                       buffers_per_sec, audio_buffer_count, audio_overrun_count);
+                printf("[AUDIO] Buffers/sec: %lu, Total: %lu, Overruns: %lu, Resyncs: %lu\r\n",
+                       buffers_per_sec, audio_buffer_count, audio_overrun_count, dma_resync_count);
             }
             /* Debug: show SAI and DMA status every 5 seconds */
             debug_counter++;
             if ((debug_counter % 5) == 0)
             {
+                /* Read NDTR close together for accurate offset */
+                uint32_t rx_ndtr = DMA1_Stream0->NDTR;
+                uint32_t tx_ndtr = DMA1_Stream1->NDTR;
+                int16_t offset = (int16_t)(tx_ndtr - rx_ndtr);
+                int16_t drift = offset - dma_initial_offset;
+                if (drift > 512) drift -= 1024;
+                if (drift < -512) drift += 1024;
+
                 printf("[DEBUG] SAI_A: SR=0x%lX CR1=0x%08lX\r\n",
                        SAI2_Block_A->SR, SAI2_Block_A->CR1);
                 printf("[DEBUG] SAI_B: SR=0x%lX CR1=0x%08lX\r\n",
                        SAI2_Block_B->SR, SAI2_Block_B->CR1);
-                printf("[DEBUG] DMA RX: CR=0x%lX NDTR=%lu\r\n",
-                       DMA1_Stream0->CR, DMA1_Stream0->NDTR);
-                printf("[DEBUG] DMA TX: CR=0x%lX NDTR=%lu\r\n",
-                       DMA1_Stream1->CR, DMA1_Stream1->NDTR);
+                printf("[DEBUG] DMA RX NDTR=%lu, TX NDTR=%lu, offset=%d, drift=%d\r\n",
+                       rx_ndtr, tx_ndtr, offset, drift);
                 extern volatile uint32_t audio_process_count;
-                /* Print samples from start, middle and near DMA position */
-                uint32_t dma_pos = 1024 - DMA1_Stream0->NDTR;
-
-                /* Read SAI DR directly (may cause FIFO issues, just for debug) */
-                uint32_t sai_dr = SAI2_Block_A->DR;
-
                 printf("[DEBUG] RX[0..3]: %d %d %d %d\r\n",
                        audio_rx_buffer[0], audio_rx_buffer[1],
                        audio_rx_buffer[2], audio_rx_buffer[3]);
                 printf("[DEBUG] TX[0..3]: %d %d %d %d\r\n",
                        audio_tx_buffer[0], audio_tx_buffer[1],
                        audio_tx_buffer[2], audio_tx_buffer[3]);
-                printf("[DEBUG] Process=%lu, DMA_TX_NDTR=%lu\r\n",
-                       audio_process_count, (uint32_t)DMA1_Stream1->NDTR);
+                printf("[DEBUG] Process=%lu\r\n", audio_process_count);
             }
             last_buffer_count = audio_buffer_count;
             last_status_time = now;
