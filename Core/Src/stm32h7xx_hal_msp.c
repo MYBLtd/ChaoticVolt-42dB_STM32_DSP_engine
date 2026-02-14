@@ -105,6 +105,42 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
 }
 
 /**
+ * @brief DAC MSP Initialization
+ * @param hdac: DAC handle pointer
+ * @retval None
+ */
+void HAL_DAC_MspInit(DAC_HandleTypeDef* hdac)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    if(hdac->Instance == DAC1)
+    {
+        __HAL_RCC_DAC12_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+
+        /* PA4 -----> DAC1_OUT1 (IN-13 VU meter) */
+        GPIO_InitStruct.Pin = GPIO_PIN_4;
+        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    }
+}
+
+/**
+ * @brief DAC MSP De-Initialization
+ * @param hdac: DAC handle pointer
+ * @retval None
+ */
+void HAL_DAC_MspDeInit(DAC_HandleTypeDef* hdac)
+{
+    if(hdac->Instance == DAC1)
+    {
+        __HAL_RCC_DAC12_CLK_DISABLE();
+        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_4);
+    }
+}
+
+/**
  * @brief SAI MSP Initialization
  * This function configures the hardware resources for SAI
  *

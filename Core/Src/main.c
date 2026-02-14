@@ -40,6 +40,7 @@ SAI_HandleTypeDef hsai_rx;  // SAI2_A - I2S Input (Slave RX)
 SAI_HandleTypeDef hsai_tx;  // SAI2_B - I2S Output (Slave TX)
 DMA_HandleTypeDef hdma_sai_rx;  // DMA for SAI2_A RX
 DMA_HandleTypeDef hdma_sai_tx;  // DMA for SAI2_B TX
+DAC_HandleTypeDef hdac1;    // DAC1 - IN-13 VU meter (PA4)
 
 /* Audio Buffers - placed in D2 SRAM for DMA1/DMA2 access --------------------*/
 /* IMPORTANT: DMA1/DMA2 on STM32H7 can ONLY access D2 SRAM (0x30000000)! */
@@ -238,6 +239,21 @@ static float drc_envelope = 0.0f;      /* Current envelope level */
 static float drc_gain_smooth = 1.0f;   /* Smoothed gain reduction */
 
 /* ==========================================================================
+ * IN-13 Nixie Bargraph VU Meter (DAC1 Channel 1 on PA4)
+ * Measured control range with MPSA42 + 10K pull-down:
+ *   770mV (DAC ~956)  = 0% bar (tube barely on)
+ *   1840mV (DAC ~2283) = 100% bar (full length)
+ * Below 956: tube off (avoid unreliable glow region)
+ * ========================================================================== */
+#define VU_DAC_MIN      956     /* 770mV - tube starts */
+#define VU_DAC_MAX      2283    /* 1840mV - full bar */
+#define VU_DAC_OFF      0       /* Below minimum: tube completely off */
+#define VU_PRIME_MS     50      /* Prime burst duration at startup */
+
+static float vu_rms_smooth = 0.0f;     /* Smoothed RMS level */
+static uint8_t vu_primed = 0;          /* Flag: prime burst done */
+
+/* ==========================================================================
  * Preset EQ Coefficients
  * ========================================================================== */
 
@@ -423,6 +439,94 @@ static inline float drc_process(float input_level)
     return drc_gain_smooth;
 }
 
+/* Forward declaration needed for functions below */
+void Error_Handler(void);
+
+/**
+ * @brief  Initialize DAC1 Channel 1 (PA4) for IN-13 VU meter
+ */
+static void MX_DAC1_Init(void)
+{
+    DAC_ChannelConfTypeDef sConfig = {0};
+
+    hdac1.Instance = DAC1;
+    if (HAL_DAC_Init(&hdac1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+    sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
+    if (HAL_DAC_ConfigChannel(&hdac1, &sConfig, DAC_CHANNEL_1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/**
+ * @brief  Prime the IN-13 tube with a 100% burst
+ *         Ensures gas discharge starts from bottom (via auxiliary cathode)
+ */
+static void VU_Prime(void)
+{
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_MAX);
+    HAL_Delay(VU_PRIME_MS);
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_OFF);
+    vu_primed = 1;
+}
+
+/**
+ * @brief  Update VU meter from audio buffer RMS level
+ *         Called from Audio_Process (ISR context) - only updates smoothed RMS
+ * @param  rx_buf: Audio buffer (stereo interleaved)
+ * @param  samples: Number of samples (L+R)
+ */
+static void VU_UpdateRMS(int16_t *rx_buf, uint16_t samples)
+{
+    float sum = 0.0f;
+    for (uint16_t i = 0; i < samples; i += 2)
+    {
+        float s = ((float)rx_buf[i] + (float)rx_buf[i + 1]) * 0.5f;
+        sum += s * s;
+    }
+    float rms = sqrtf(sum / (float)(samples / 2));
+
+    /* Asymmetric smoothing: fast attack, moderate release */
+    if (rms > vu_rms_smooth)
+        vu_rms_smooth = rms * 0.3f + vu_rms_smooth * 0.7f;
+    else
+        vu_rms_smooth = rms * 0.10f + vu_rms_smooth * 0.90f;
+}
+
+/**
+ * @brief  Write smoothed RMS value to DAC (call from main loop, not ISR)
+ */
+static void VU_WriteDac(void)
+{
+    if (!vu_primed) return;
+
+    /* Music RMS is typically ~3000-10000 (not 32768 peak).
+     * Use -20dB (0.1 = ~3277) as reference for full scale,
+     * with sqrt compression for a more natural VU response. */
+    float normalized = vu_rms_smooth / 10000.0f;
+    if (normalized > 1.0f) normalized = 1.0f;
+
+    /* Below a threshold: turn tube completely off to avoid random spots */
+    if (normalized < 0.01f)
+    {
+        HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_OFF);
+        return;
+    }
+
+    /* Sqrt compression: spreads mid-range, feels more natural */
+    normalized = sqrtf(normalized);
+
+    uint16_t dac_val = VU_DAC_MIN + (uint16_t)(normalized * (float)(VU_DAC_MAX - VU_DAC_MIN));
+    if (dac_val > VU_DAC_MAX) dac_val = VU_DAC_MAX;
+
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
+}
+
 /* DMA drift detection and auto-recovery */
 #define DMA_DRIFT_THRESHOLD     50      /* Max allowed drift in samples */
 #define DMA_DRIFT_CHECK_INTERVAL 500    /* Check every 500ms */
@@ -465,6 +569,7 @@ static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_SAI2_Init(void);
+static void MX_DAC1_Init(void);
 void Error_Handler(void);
 
 /* Audio processing */
@@ -511,6 +616,11 @@ int main(void)
     MX_SAI2_Init();  // I2S Audio
     printf("[OK] SAI2 (I2S Audio) initialized\r\n");
     printf("[NOTE] Use 74HCT04 buffer for I2S signals (5V tolerant)\r\n");
+
+    MX_DAC1_Init();  // IN-13 VU meter
+    HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+    VU_Prime();
+    printf("[OK] DAC1 (IN-13 VU meter on PA4) initialized and primed\r\n");
 
     /* Print startup banner */
     printf("\r\n");
@@ -694,6 +804,9 @@ int main(void)
                 line_buffer[line_pos++] = (char)data;
             }
         }
+
+        /* Update IN-13 VU meter DAC output */
+        VU_WriteDac();
 
         /* Small delay to prevent tight loop when no audio */
         HAL_Delay(1);
@@ -1119,6 +1232,9 @@ static void Process_GATT_Command(const char *line)
 static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
 {
     audio_process_count++;
+
+    /* Update VU meter RMS from input signal (pre-DSP for true level) */
+    VU_UpdateRMS(rx_buf, samples);
 
     /* Bypass mode: direct passthrough without any processing */
     if (dsp_bypass_enabled)
