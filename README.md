@@ -2,7 +2,7 @@
 
 Real-time audio DSP processor running on STM32H753ZI (Nucleo-144), receiving I2S audio from ESP32 Bluetooth A2DP sink, with BLE GATT control interface.
 
-**Version:** 0.3.0 | **Build:** 42 | **Date:** 2026-02-06
+**Version:** 0.4.0 | **Build:** 51 | **Date:** 2026-02-14
 
 ## Overview
 
@@ -47,6 +47,7 @@ The BM83 runs as a standard A2DP sink out-of-the-box (no custom firmware) with a
 - **Mute**: Zero output
 - **Bypass**: Skip all DSP (direct passthrough)
 - **Fixed Headroom**: -9dB always applied, prevents volume jumps when toggling effects
+- **IN-13 VU Meter**: Nixie bargraph tube driven by DAC showing real-time audio RMS level
 
 ## Hardware Requirements
 
@@ -57,6 +58,16 @@ The BM83 runs as a standard A2DP sink out-of-the-box (no custom firmware) with a
 - **ESP32-WROOM-32** running Bluetooth A2DP sink firmware
 - **PCM5102A** I2S DAC module (or equivalent)
 - **74HCT04** hex inverter IC (for I2S signal buffering)
+
+### VU Meter Components
+- **IN-13** Soviet neon bargraph tube
+- **MPSA42** NPN high-voltage transistor (300V)
+- **4.7KΩ 1W** resistor (anode current limit)
+- **100KΩ** resistor (auxiliary cathode to anode)
+- **1KΩ** resistor (DAC to transistor base)
+- **10KΩ** resistor (base pull-down)
+- **270Ω** resistor (emitter degeneration)
+- **140-170V DC** power supply (ZVS boost converter + rectifier/filter)
 
 ### Why 74HCT04 Buffer?
 
@@ -117,6 +128,37 @@ GND ───────────────── GND
 | USART2 RX (from ESP32) | PD6 | CN9-4 | ESP32 UART TX |
 | USART3 TX (Debug VCP) | PD8 | ST-LINK | Serial console |
 | USART3 RX (Debug VCP) | PD9 | ST-LINK | Serial console |
+| DAC1_OUT1 (VU meter) | PA4 | CN7-17 | To MPSA42 base via 1KΩ |
+
+### IN-13 VU Meter Circuit
+
+```
++140V ─── R1 (4K7 1W) ───┬─── IN-13 Anode (yellow mark)
+                          │
+                    R4 (100KΩ)
+                          │
+                    IN-13 Auxiliary Cathode (red mark)
+
+                    IN-13 Cathode (middle pin)
+                          │
+                    MPSA42 Collector
+                    MPSA42 Base ─── R2 (1KΩ) ─── STM32 PA4 (DAC1_OUT1)
+                          │
+                    R5 (10KΩ) to GND (base pull-down)
+                          │
+                    MPSA42 Emitter ─── R3 (270Ω) ─── GND
+```
+
+**IN-13 Pin Identification:**
+- **Yellow mark** = Anode (connects to nickel mesh inside tube)
+- **Middle pin** = Main cathode (120mm molybdenum rod)
+- **Red mark** = Auxiliary cathode (short ~2mm starter electrode)
+
+**Operating Notes:**
+- Control range: 770mV (0%) to 1840mV (100%) at PA4
+- Tube requires prime burst at startup (100% for 50ms) to ensure glow starts from bottom
+- 10KΩ base pull-down prevents false triggering from MPSA42 gain
+- 100KΩ from auxiliary cathode to anode ensures reliable glow initiation
 
 ## Building and Flashing
 
@@ -193,26 +235,26 @@ GATT:CTRL:0901  → Bass Boost ON
 ### Signal Chain
 
 ```
-I2S Input
-    │
-    ▼
+I2S Input ──────────────────────┐
+    │                          │
+    ▼                          ▼
+┌─────────────────┐    ┌──────────────────┐
+│  Preset EQ      │    │  VU Meter RMS    │
+└────────┬────────┘    │  (pre-DSP level) │
+         │             └────────┬─────────┘
+    ▼                          │
+┌─────────────────┐            ▼
+│  Loudness       │    ┌──────────────────┐
+└────────┬────────┘    │  DAC1 → PA4      │
+         │             │  → MPSA42 → IN-13│
+    ▼                  └──────────────────┘
 ┌─────────────────┐
-│  Preset EQ      │  ← OFFICE/FULL/NIGHT/SPEECH biquad filters
+│  Bass Boost     │
 └────────┬────────┘
          │
     ▼
 ┌─────────────────┐
-│  Loudness       │  ← Low-shelf +6dB @ 150Hz (when enabled)
-└────────┬────────┘
-         │
-    ▼
-┌─────────────────┐
-│  Bass Boost     │  ← Low-shelf +8dB @ 100Hz (when enabled)
-└────────┬────────┘
-         │
-    ▼
-┌─────────────────┐
-│  Normalizer/DRC │  ← 2:1 ratio, -12dB threshold (when enabled)
+│  Normalizer/DRC │
 └────────┬────────┘
          │
     ▼
@@ -354,6 +396,14 @@ __attribute__((section(".RAM_D2"))) int16_t audio_tx_buffer[...];
 ```
 
 ## Changelog
+
+### v0.4.0 (2026-02-14)
+- IN-13 nixie bargraph VU meter driven by DAC1 (PA4)
+- MPSA42 current sink with measured calibration (770mV-1840mV)
+- RMS-based level detection with asymmetric attack/release
+- Sqrt compression for natural VU response across music genres
+- Startup prime burst ensures reliable bottom-up glow initiation
+- VU meter works in all modes including bypass
 
 ### v0.3.0 (2026-02-06)
 - Implemented all DSP features: presets, loudness, bass boost, normalizer, duck, mute, bypass

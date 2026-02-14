@@ -34,6 +34,11 @@ UART from ESP32 ───>│  │   USART2    │────>│  Process_GATT
 Debug output <──────│  │   USART3    │   ← printf() via _write() override               │
 (ST-LINK VCP)       │  └─────────────┘                                                  │
                     │                                                                   │
+                    │  ┌─────────────┐     ┌─────────────────────────┐                  │
+IN-13 VU meter <────│  │    DAC1     │<────│  VU_UpdateRMS() (ISR)   │                  │
+(via MPSA42)        │  │  PA4 output │     │  VU_WriteDac() (main)   │                  │
+                    │  └─────────────┘     └─────────────────────────┘                  │
+                    │                                                                   │
                     └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -475,6 +480,98 @@ void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples) {
         tx_buf[i]     = (int16_t)(left  * 32767.0f);
         tx_buf[i + 1] = (int16_t)(right * 32767.0f);
     }
+}
+```
+
+## IN-13 Nixie Bargraph VU Meter
+
+### DAC Configuration
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| Instance | DAC1 | APB1 peripheral |
+| Output Pin | PA4 (DAC1_OUT1) | Analog mode, no pull |
+| Trigger | None (software) | Written from main loop |
+| Output Buffer | Enabled | Low impedance drive |
+| Channel | 1 | 12-bit right-aligned |
+
+### Drive Circuit
+
+The IN-13 requires 0-10mA for 0-100% bar length. An MPSA42 NPN transistor (300V, hFE ~50-100) operates as a linear current sink controlled by the DAC.
+
+```
++140V ─── 4K7 (1W) ─── IN-13 Anode
+                         │
+                   100KΩ ─── IN-13 Aux Cathode
+                         │
+                   IN-13 Cathode
+                         │
+                   MPSA42 Collector
+                   MPSA42 Base ─── 1KΩ ─── PA4
+                         │              │
+                       10KΩ (pull-down to GND)
+                         │
+                   MPSA42 Emitter ─── 270Ω ─── GND
+```
+
+**Measured calibration points:**
+- 770mV at PA4 (DAC value 956) = 0% bar (tube barely visible)
+- 1840mV at PA4 (DAC value 2283) = 100% bar (full 120mm)
+- Below 770mV: tube off (unreliable glow region)
+
+The 10KΩ base pull-down is required because the MPSA42 has sufficient gain that noise or finger-touch on the base causes false triggering.
+
+### RMS Level Detection
+
+```c
+static void VU_UpdateRMS(int16_t *rx_buf, uint16_t samples)
+{
+    float sum = 0.0f;
+    for (uint16_t i = 0; i < samples; i += 2)
+    {
+        float s = ((float)rx_buf[i] + (float)rx_buf[i + 1]) * 0.5f;
+        sum += s * s;
+    }
+    float rms = sqrtf(sum / (float)(samples / 2));
+
+    /* Asymmetric smoothing: fast attack, moderate release */
+    if (rms > vu_rms_smooth)
+        vu_rms_smooth = rms * 0.3f + vu_rms_smooth * 0.7f;   /* ~2ms attack */
+    else
+        vu_rms_smooth = rms * 0.10f + vu_rms_smooth * 0.90f;  /* ~60ms release */
+}
+```
+
+**Design decisions:**
+- RMS computed from **input** signal (pre-DSP) to show true audio level
+- Called from DMA ISR (Audio_Process) — only float math, no HAL calls
+- DAC write happens in main loop (~1ms interval) to avoid ISR overhead
+- Mono mix (L+R average) for single-channel VU display
+
+### DAC Scaling
+
+Music RMS is typically 3000-10000 (not 32768 peak). Direct normalization to 32768 would only use ~30% of the tube range.
+
+```c
+float normalized = vu_rms_smooth / 10000.0f;  /* Full scale at typical loud music */
+if (normalized > 1.0f) normalized = 1.0f;
+
+/* Sqrt compression: spreads mid-range for natural VU response */
+normalized = sqrtf(normalized);
+
+uint16_t dac_val = VU_DAC_MIN + (uint16_t)(normalized * (VU_DAC_MAX - VU_DAC_MIN));
+```
+
+### Startup Prime Burst
+
+Gas discharge tubes need ionization priming to ensure the glow starts from the bottom (near the auxiliary cathode). Without priming, random glowing spots can appear in the middle of the tube.
+
+```c
+static void VU_Prime(void)
+{
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_MAX);
+    HAL_Delay(50);  /* 50ms at full current */
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_OFF);
 }
 ```
 
