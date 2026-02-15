@@ -1,3 +1,44 @@
+# Quick Setup (Bluetooth + Sound)
+
+1. **Power on**
+   Connect power and turn the speaker on. Wait a few seconds until it's ready to pair.
+
+2. **Pair with your iPhone / iPad / Mac**
+   Open Settings > Bluetooth, select *ChaoticVolt 42decibels* (your model name), and connect. If prompted, confirm pairing.
+
+3. **Start playing**
+   Open your music app and press play. Set a comfortable volume on your device first, then fine-tune on the speaker.
+
+4. **Choose your sound (DSP Presets)**
+   Select the voicing that matches your moment:
+   - **FULL** (default: rich, balanced, premium)
+   - **OFFICE** (clear, relaxed, near-field)
+   - **NIGHT** (softer, capped loudness)
+   - **SPEECH** (voice clarity)
+
+5. **Optional modes (when you need them)**
+   - **Bass Enhancement:** add extra weight and impact.
+   - **DSP Bypass:** direct, unprocessed reference playback.
+
+---
+
+## Quick Tips for the Best Sound
+
+- Keep your phone within 1-3 meters for the cleanest, most stable Bluetooth link.
+- Avoid blocking the signal (your body and walls can reduce quality).
+- Use the highest streaming quality (or lossless where available).
+
+---
+
+## If It Doesn't Connect
+
+1. Move closer and try again
+2. Toggle Bluetooth off/on on your phone/computer
+3. "Forget this device" and re-pair
+4. Power-cycle the speaker and retry
+
+---
+
 # Bluetooth Audio Quality (BM83)
 
 This speaker uses a Microchip BM83 Bluetooth audio module for Bluetooth Classic (A2DP) music streaming. The BM83 decodes the incoming Bluetooth audio stream and outputs digital audio internally to the rest of the speaker.
