@@ -528,7 +528,7 @@ static void VU_WriteDac(void)
 }
 
 /* DMA drift detection and auto-recovery */
-#define DMA_DRIFT_THRESHOLD     50      /* Max allowed drift in samples */
+#define DMA_DRIFT_THRESHOLD     20      /* Max allowed drift in samples */
 #define DMA_DRIFT_CHECK_INTERVAL 500    /* Check every 500ms */
 static int16_t dma_initial_offset = 0;  /* Captured after startup */
 static uint8_t dma_offset_captured = 0; /* Flag: initial offset valid */
@@ -1088,6 +1088,7 @@ static const int16_t sine_table[256] = {
     -4808, -4011, -3212, -2410, -1608, -804
 };
 static uint32_t sine_phase = 0;
+static volatile uint8_t dsp_sine_test = 0;  /* Sine test mode: generates 1kHz tone internally */
 
 /**
  * @brief  Parse hex string to bytes
@@ -1222,6 +1223,11 @@ static void Process_GATT_Command(const char *line)
                     memset(&bass_state_R, 0, sizeof(bass_state_R));
                 }
                 break;
+            case 0x0A:  /* Sine Test Mode */
+                printf("[DSP] Sine Test: %s (1kHz tone, ignores input)\r\n", cmd_value ? "ON" : "OFF");
+                dsp_sine_test = cmd_value ? 1 : 0;
+                sine_phase = 0;
+                break;
             default:
                 printf("[DSP] Unknown command: 0x%02X\r\n", cmd_type);
                 break;
@@ -1235,6 +1241,21 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
 
     /* Update VU meter RMS from input signal (pre-DSP for true level) */
     VU_UpdateRMS(rx_buf, samples);
+
+    /* Sine test mode: generate 1kHz tone internally, ignore input */
+    if (dsp_sine_test)
+    {
+        /* 1kHz at 44100Hz: step through 256-entry table at 256*1000/44100 ≈ 5.8 per sample
+         * Using fixed-point: phase_increment = (256 * 1000 * 256) / 44100 ≈ 1486 (8.8 fixed) */
+        for (uint16_t i = 0; i < samples; i += 2)
+        {
+            int16_t val = sine_table[(sine_phase >> 8) & 0xFF] >> 2;  /* -12dB */
+            tx_buf[i]     = val;
+            tx_buf[i + 1] = val;
+            sine_phase += 1486;  /* ~1kHz */
+        }
+        return;
+    }
 
     /* Bypass mode: direct passthrough without any processing */
     if (dsp_bypass_enabled)
