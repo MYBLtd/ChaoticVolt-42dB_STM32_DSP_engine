@@ -381,13 +381,14 @@ static ble_state_t s_ble = {
 static bool s_uart_echo_initialized = false;
 
 /* Transient DSP state — not persisted in NVS, tracked locally for status notifications.
- * FLAGS byte bit layout (shared by STATUS[3] and shieldStatus in GalacticStatus):
+ * s_dsp_flags uses shieldStatus bit layout (GalacticStatus byte 2, per Protocol.md):
  *   Bit 0 (0x01): Mute
  *   Bit 1 (0x02): Audio Duck
  *   Bit 2 (0x04): Loudness  (also in NVS)
  *   Bit 3 (0x08): Normalizer
- *   Bit 4 (0x10): Bass Boost
- *   Bit 5 (0x20): Bypass
+ *   Bit 4 (0x10): Bypass
+ *   Bit 5 (0x20): Bass Boost
+ * STATUS[3] FLAGS uses a different layout (see update_status_value).
  */
 static uint8_t s_dsp_flags = 0x00;  /* All off at startup */
 static uint8_t s_dsp_volume = 100;  /* Default 100% */
@@ -569,12 +570,12 @@ static void handle_control_write(const uint8_t *data, uint16_t len)
         break;
 
     case DSP_CMD_SET_BYPASS:
-        if (val) s_dsp_flags |= 0x20; else s_dsp_flags &= ~0x20;
+        if (val) s_dsp_flags |= 0x10; else s_dsp_flags &= ~0x10;  /* bit 4 per Protocol.md */
         ESP_LOGI(TAG, "DSP Bypass set to: %s (forwarded to UART)", val ? "ON" : "OFF");
         break;
 
     case DSP_CMD_SET_BASS_BOOST:
-        if (val) s_dsp_flags |= 0x10; else s_dsp_flags &= ~0x10;
+        if (val) s_dsp_flags |= 0x20; else s_dsp_flags &= ~0x20;  /* bit 5 per Protocol.md */
         ESP_LOGI(TAG, "Bass Boost set to: %s (forwarded to UART)", val ? "ON" : "OFF");
         break;
 
@@ -601,14 +602,23 @@ static void update_status_value(void)
     nvs_dsp_settings_t settings;
     nvs_settings_get(&settings);
 
-    /* Merge loudness (NVS) into flags bit 2 */
-    uint8_t flags = s_dsp_flags;
-    if (settings.loudness) flags |= 0x04; else flags &= ~0x04;
+    /* Build STATUS[3] FLAGS per Protocol.md Section 10.4 (different from shieldStatus!):
+     *   Bit 0 (0x01): Limiter — always active
+     *   Bit 3 (0x08): Muted
+     *   Bit 4 (0x10): Audio Duck
+     *   Bit 5 (0x20): Normalizer
+     *   Bit 6 (0x40): Bypass
+     */
+    uint8_t flags3 = 0x01;  /* Limiter always active */
+    if (s_dsp_flags & 0x01) flags3 |= 0x08;  /* Mute    → bit 3 */
+    if (s_dsp_flags & 0x02) flags3 |= 0x10;  /* Duck    → bit 4 */
+    if (s_dsp_flags & 0x08) flags3 |= 0x20;  /* Norm    → bit 5 */
+    if (s_dsp_flags & 0x10) flags3 |= 0x40;  /* Bypass  → bit 6 */
 
     status_value[0] = DSP_STATUS_PROTOCOL_VERSION;
     status_value[1] = settings.preset_id;
     status_value[2] = settings.loudness;
-    status_value[3] = flags;  /* All DSP feature flags */
+    status_value[3] = flags3;
 
     /* Update the attribute value in GATT database */
     if (s_ble.gatts_if != ESP_GATT_IF_NONE && s_ble.handle_table[IDX_STATUS_VAL] != 0) {
