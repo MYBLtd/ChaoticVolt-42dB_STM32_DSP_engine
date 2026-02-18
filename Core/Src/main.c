@@ -725,7 +725,7 @@ int main(void)
                 /* Track drift for monitoring only — resync disabled because:
                  * 1. Half-buffer processing tolerates arbitrary drift
                  * 2. Hard DMA restart causes worse glitches than drift itself
-                 * 3. ESP32 I2S clock jitter causes rapid drift that would
+                 * 3. Master I2S clock jitter causes rapid drift that would
                  *    trigger constant resyncs, each one an audible click */
                 (void)0;  /* drift monitoring continues in debug output below */
             }
