@@ -514,8 +514,6 @@ Robin Kluit
 - [STM32H753 Reference Manual (RM0433)](https://www.st.com/resource/en/reference_manual/rm0433)
 - [STM32H7 SAI Application Note (AN5543)](https://www.st.com/resource/en/application_note/an5543)
 - [STM32H7 DMA Application Note (AN4031)](https://www.st.com/resource/en/application_note/an4031)
-
-- [Special thanks to Andreas Spiess:] (https://youtu.be/5DG0-_lseR4?si=OCAofh8rW4z6m_Xm) Andreas inspired me to speed up my workflow further with Claude AI.
-   I hate to do documentation, AI save a lot of time doing this for me.
+- [Special thanks to Andreas Spiess:](https://youtu.be/5DG0-_lseR4?si=OCAofh8rW4z6m_Xm) - Andreas inspired me to speed up my workflow further with Claude AI. I hate to do documentation, AI save a lot of time doing this for me.
 
 
