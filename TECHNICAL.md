@@ -9,9 +9,9 @@ Detailed implementation notes for the 42dB DSP Engine on STM32H753.
                     │                      STM32H753ZI DSP Engine                       │
                     │                                                                   │
                     │  ┌─────────────┐     ┌─────────────────────────────┐             │
-I2S from ESP32 ────>│  │   SAI2_A    │────>│      Audio_Process()        │             │
+I2S from ESP32 ────>│  │   SAI1_A    │────>│      Audio_Process()        │             │
 (via 74HCT04)       │  │  Slave RX   │     │                             │             │
-                    │  │  DMA1_St0   │     │  Preset EQ ──> Loudness     │             │
+PE5/PE4/PE6 ────>   │  │  DMA1_St0   │     │  Preset EQ ──> Loudness     │             │
                     │  └─────────────┘     │       │            │        │             │
                     │                      │       v            v        │             │
                     │                      │  Bass Boost ──> Normalizer  │             │
@@ -19,24 +19,24 @@ I2S from ESP32 ────>│  │   SAI2_A    │────>│      Audio_
                     │                      │       v            v        │             │
                     │                      │   Volume ──> Duck ──> Mute  │             │
                     │  ┌─────────────┐     │       │                     │             │
-I2S to PCM5102A <───│  │   SAI2_B    │<────│   Limiter                   │             │
-                    │  │  Slave TX   │     │                             │             │
+I2S to PCM5102A <───│  │   SAI1_B    │<────│   Limiter                   │             │
+PE3 <────           │  │  Slave TX   │     │                             │             │
                     │  │  DMA1_St1   │     └─────────────────────────────┘             │
                     │  └─────────────┘                   ▲                             │
                     │                                    │                             │
                     │  ┌─────────────┐     ┌─────────────┴──────────┐                  │
 UART from ESP32 ───>│  │   USART2    │────>│  Process_GATT_Command() │                  │
-(GATT commands)     │  │ IRQ Prio 0  │     │   - Parse command       │                  │
+PD6 RX, PD5 TX      │  │ IRQ Prio 0  │     │   - Parse command       │                  │
                     │  └─────────────┘     │   - Update DSP flags    │                  │
                     │                      └────────────────────────┘                  │
                     │                                                                   │
                     │  ┌─────────────┐                                                  │
 Debug output <──────│  │   USART3    │   ← printf() via _write() override               │
-(ST-LINK VCP)       │  └─────────────┘                                                  │
+PD8 TX (ST-LINK)    │  └─────────────┘                                                  │
                     │                                                                   │
                     │  ┌─────────────┐     ┌─────────────────────────┐                  │
 IN-13 VU meter <────│  │    DAC1     │<────│  VU_UpdateRMS() (ISR)   │                  │
-(via MPSA42)        │  │  PA4 output │     │  VU_WriteDac() (main)   │                  │
+PA4 (via MPSA42)    │  │  PA4 output │     │  VU_WriteDac() (main)   │                  │
                     │  └─────────────┘     └─────────────────────────┘                  │
                     │                                                                   │
                     └───────────────────────────────────────────────────────────────────┘
@@ -49,11 +49,11 @@ IN-13 VU meter <────│  │    DAC1     │<────│  VU_UpdateR
 | Setting | Value | Notes |
 |---------|-------|-------|
 | Instance | USART2 | APB1 peripheral |
-| TX Pin | PD5 (AF7) | CN9 pin 6, to ESP32 GPIO5 |
-| RX Pin | PD6 (AF7) | CN9 pin 4, from ESP32 GPIO4 |
+| TX Pin | PD5 (AF7) | CN9 pin 6, to ESP32 GPIO5 (RX) |
+| RX Pin | PD6 (AF7) | CN9 pin 4, from ESP32 GPIO4 (TX) |
 | Baud Rate | 115200 | 8N1 |
 | Mode | Interrupt-driven | Ring buffer in ISR |
-| NVIC Priority | 0 | Highest - critical for reliability |
+| NVIC Priority | 0 | Highest — critical for reliability |
 
 ### USART3 (Debug Console)
 
@@ -64,16 +64,16 @@ IN-13 VU meter <────│  │    DAC1     │<────│  VU_UpdateR
 | RX Pin | PD9 (AF7) | ST-LINK VCP |
 | Baud Rate | 115200 | 8N1 |
 
-### SAI2 (I2S Audio)
+### SAI1 (I2S Audio)
 
-**SAI2_A - I2S Input (Slave Receiver from ESP32)**
+**SAI1_A — I2S Input (Slave Receiver from ESP32)**
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| Instance | SAI2_Block_A | APB2 peripheral |
-| SCK Pin | PD13 (AF10) | Bit Clock from ESP32 (via 74HCT04) |
-| FS Pin | PD12 (AF10) | Frame Sync / LRCK from ESP32 (via 74HCT04) |
-| SD Pin | PD11 (AF10) | Serial Data from ESP32 (via 74HCT04) |
+| Instance | SAI1_Block_A | APB2 peripheral |
+| SCK Pin | PE5 (AF6) | Bit Clock from ESP32 (via 74HCT04) |
+| FS Pin | PE4 (AF6) | Frame Sync / LRCK from ESP32 (via 74HCT04) |
+| SD Pin | PE6 (AF6) | Serial Data from ESP32 (via 74HCT04) |
 | Mode | Slave RX | Clock provided by ESP32 |
 | Protocol | FREE (manual config) | Full control over I2S timing |
 | Data Size | 16-bit | Matches ESP32 output |
@@ -84,13 +84,13 @@ IN-13 VU meter <────│  │    DAC1     │<────│  VU_UpdateR
 | Sample Rate | 44100 Hz | From ESP32 A2DP |
 | DMA | DMA1_Stream0 | Circular mode, half/full callbacks |
 
-**SAI2_B - I2S Output (Slave Transmitter to DAC)**
+**SAI1_B — I2S Output (Slave Transmitter to PCM5102A DAC)**
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| Instance | SAI2_Block_B | APB2 peripheral |
-| SD Pin | PA0 (AF10) | Serial Data to PCM5102A DIN |
-| Mode | Slave TX | Synchronized to SAI2_A |
+| Instance | SAI1_Block_B | APB2 peripheral |
+| SD Pin | PE3 (AF6) | Serial Data to PCM5102A DIN |
+| Mode | Slave TX | Synchronized to SAI1_A |
 | ClockStrobing | Falling Edge | Output on falling BCLK edge |
 | Synchro | SAI_SYNCHRONOUS | Internal sync to Block A |
 | DMA | DMA1_Stream1 | Circular mode |
@@ -98,8 +98,8 @@ IN-13 VU meter <────│  │    DAC1     │<────│  VU_UpdateR
 **Clock Edge Explanation:**
 
 The ESP32 outputs data on falling BCLK edge (valid during low period). To capture this correctly:
-- SAI2_A samples on RISING edge (data stable from previous falling edge)
-- SAI2_B outputs on FALLING edge (same timing as original)
+- SAI1_A samples on RISING edge (data stable from previous falling edge)
+- SAI1_B outputs on FALLING edge (same timing as original source)
 
 ```
          ┌──┐  ┌──┐  ┌──┐  ┌──┐
@@ -108,11 +108,21 @@ BCLK  ───┘  └──┘  └──┘  └──┘  └──
             ↑     ↑     ↑         STM32 samples data on rising edge
 ```
 
+### DAC1 (IN-13 VU Meter)
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| Instance | DAC1 | APB1 peripheral |
+| Output Pin | PA4 (DAC1_OUT1) | Analog mode, no pull |
+| Trigger | None (software) | Written from main loop |
+| Output Buffer | Enabled | Low impedance drive |
+| Channel | 1 | 12-bit right-aligned |
+
 ## DMA Configuration
 
 ### Memory Placement (Critical!)
 
-On STM32H7, DMA1 and DMA2 can ONLY access D2 SRAM (0x30000000-0x30047FFF). Buffers in other RAM regions will cause DMA transfer failures.
+On STM32H7, DMA1 and DMA2 can ONLY access D2 SRAM (0x30000000–0x30047FFF). Buffers in other RAM regions will cause DMA transfer failures.
 
 ```c
 /* Linker script section for D2 SRAM */
@@ -145,12 +155,42 @@ HalfCpltCallback: Process samples 0-511 → TX buffer 0-511
 - Each sample: 16-bit (2 bytes)
 - Total buffer: 2048 bytes per direction
 
+### TX DMA Alignment
+
+TX DMA is **not** started at boot. Instead, it is started from within the first `HAL_SAI_RxCpltCallback`. When this callback fires, the RX DMA has just wrapped to position 0. Starting TX here gives zero initial phase offset, so TX and RX are in lockstep from the first moment.
+
+```c
+// In HAL_SAI_RxCpltCallback:
+if (!tx_dma_started) {
+    HAL_SAI_Transmit_DMA(&hsai_tx, (uint8_t *)audio_tx_buffer, AUDIO_BUFFER_SIZE * 2);
+    tx_dma_started = 1;
+}
+
+// In HAL_SAI_RxHalfCpltCallback:
+if (!tx_dma_started) return;  // Don't process until TX is aligned
+```
+
+Without this, TX can start at an arbitrary position in the RX buffer, causing drift to grow to ±512 samples (~85 seconds) before the resync kicks in — which itself causes an audible click. The alignment approach means drift stays at ≈ 0 indefinitely.
+
+### DMA Drift Monitoring
+
+DMA drift is monitored every 500ms by comparing NDTR registers, but **no automatic resync is triggered**. Resync was disabled because:
+
+1. Half-buffer processing already tolerates arbitrary drift within ±256 samples
+2. Hard DMA restarts cause audible clicks worse than any drift
+3. ESP32 I2S clock jitter causes rapid oscillating drift that would trigger constant resyncs
+
+```c
+#define DMA_DRIFT_THRESHOLD     100   /* Samples — for monitoring only */
+#define DMA_DRIFT_CHECK_INTERVAL 500  /* ms */
+```
+
 ### Latency Calculation
 
 ```
 Samples per half-buffer: 256
 Sample rate: 44100 Hz
-Latency per half: 256 / 44100 = 5.8 ms
+Latency per half: 256 / 44100 ≈ 5.8 ms
 Total round-trip latency: ~12 ms (RX half + processing + TX half)
 ```
 
@@ -160,13 +200,13 @@ This was a critical fix for reliable UART reception. When audio DMA had the same
 
 ```c
 /* In MX_DMA_Init() */
-HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);      /* Highest priority */
-HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 2, 0); /* Audio RX - lower */
-HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 2, 0); /* Audio TX - lower */
+HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);       /* Highest priority */
+HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 2, 0);  /* Audio RX — lower */
+HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 2, 0);  /* Audio TX — lower */
 ```
 
-Priority 0 = highest (can preempt everything)
-Priority 2 = lower (can be preempted by priority 0-1)
+Priority 0 = highest (can preempt everything).
+Priority 2 = lower (can be preempted by priorities 0–1).
 
 ## UART Reception
 
@@ -235,7 +275,7 @@ Example: `GATT:CTRL:0201\r\n` = Enable Loudness
 
 ### Tolerant Parsing
 
-Due to occasional UART byte loss, the parser accepts both "CTRL" and "TRL":
+Due to occasional UART byte loss, the parser accepts both `CTRL` and `TRL` substrings:
 
 ```c
 if ((strstr(char_name, "CTRL") != NULL || strstr(char_name, "TRL") != NULL) && cmd_len >= 2)
@@ -249,10 +289,11 @@ if ((strstr(char_name, "CTRL") != NULL || strstr(char_name, "TRL") != NULL) && c
 | 0x02 | SET_LOUDNESS | Set `dsp_loudness_enabled`, clear filter state on disable |
 | 0x04 | SET_MUTE | Set `dsp_mute_enabled` |
 | 0x05 | SET_DUCK | Set `dsp_duck_enabled`, update `duck_target_gain` |
-| 0x06 | SET_NORMALIZER | Set `dsp_normalizer_enabled`, reset envelope on disable |
+| 0x06 | SET_NORMALIZER | Set `dsp_normalizer_enabled`, reset DRC envelope on disable |
 | 0x07 | SET_VOLUME | Set `device_trim_value`, call `update_target_gain()` |
 | 0x08 | SET_BYPASS | Set `dsp_bypass_enabled` |
 | 0x09 | SET_BASS_BOOST | Set `dsp_bass_boost_enabled`, clear filter state on disable |
+| 0x0A | SET_SINE_TEST | Set `dsp_sine_test`, reset `sine_phase = 0` |
 
 ## DSP Implementation
 
@@ -307,21 +348,21 @@ b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
 |------|------|-----------|------|---------|
 | Loudness | Low-shelf | 150 Hz | +6 dB | Q=0.707 |
 | Bass Boost | Low-shelf | 100 Hz | +8 dB | S=0.7 |
-| OFFICE preset | High-shelf | 6 kHz | +1.5 dB | - |
-| FULL bass | Low-shelf | 120 Hz | +4 dB | - |
-| FULL treble | High-shelf | 8 kHz | +3 dB | - |
-| NIGHT | Low-shelf | 150 Hz | -3 dB | - |
-| SPEECH HP | High-pass | 150 Hz | - | Q=0.707 |
+| OFFICE preset | High-shelf | 6 kHz | +1.5 dB | — |
+| FULL bass | Low-shelf | 120 Hz | +4 dB | — |
+| FULL treble | High-shelf | 8 kHz | +3 dB | — |
+| NIGHT | Low-shelf | 150 Hz | -3 dB | — |
+| SPEECH HP | High-pass | 150 Hz | — | Q=0.707 |
 | SPEECH mid | Peaking | 2.5 kHz | +3 dB | Q=1.0 |
 
 ### Normalizer/DRC Implementation
 
 ```c
 #define DRC_THRESHOLD_LIN   0.251189f  /* -12 dB */
-#define DRC_RATIO           2.0f       /* Gentle compression */
-#define DRC_ATTACK_COEF     0.002268f  /* ~10 ms */
-#define DRC_RELEASE_COEF    0.000284f  /* ~80 ms */
-#define DRC_MAKEUP_LIN      1.412538f  /* +3 dB */
+#define DRC_RATIO           2.0f       /* Gentle 2:1 ratio */
+#define DRC_ATTACK_COEF     0.002268f  /* ~10 ms attack */
+#define DRC_RELEASE_COEF    0.000284f  /* ~80 ms release */
+#define DRC_MAKEUP_LIN      1.412538f  /* +3 dB makeup gain */
 
 static float drc_envelope = 0.0f;
 static float drc_gain_smooth = 1.0f;
@@ -363,11 +404,11 @@ Human perception is logarithmic. Linear fade sounds wrong. This piecewise approx
 float trim_to_gain(uint8_t trim) {
     float db;
     if (trim >= 100)      db = 0.0f;
-    else if (trim >= 80)  db = (trim - 100) * 0.3f;       /* 100→0dB, 80→-6dB */
-    else if (trim >= 60)  db = -6.0f + (trim - 80) * 0.3f;  /* 80→-6dB, 60→-12dB */
+    else if (trim >= 80)  db = (trim - 100) * 0.3f;        /* 100→0dB,  80→-6dB  */
+    else if (trim >= 60)  db = -6.0f + (trim - 80) * 0.3f;  /* 80→-6dB,  60→-12dB */
     else if (trim >= 40)  db = -12.0f + (trim - 60) * 0.4f; /* 60→-12dB, 40→-20dB */
-    else if (trim >= 20)  db = -20.0f + (trim - 40) * 0.75f; /* 40→-20dB, 20→-35dB */
-    else                  db = -35.0f + (trim - 20) * 1.25f; /* 20→-35dB, 0→-60dB */
+    else if (trim >= 20)  db = -20.0f + (trim - 40) * 0.75f;/* 40→-20dB, 20→-35dB */
+    else                  db = -35.0f + (trim - 20) * 1.25f;/* 20→-35dB,  0→-60dB */
 
     db += FIXED_HEADROOM_DB;  /* -9 dB always applied */
     return powf(10.0f, db / 20.0f);
@@ -401,7 +442,7 @@ void update_target_gain(void) {
 }
 ```
 
-This ensures switching away from NIGHT restores full volume.
+This ensures switching away from NIGHT restores full volume without any stored state change.
 
 ### Smooth Gain Ramping
 
@@ -410,17 +451,40 @@ Prevents clicks/pops when gain changes:
 ```c
 #define GAIN_RAMP_COEFF 0.05f
 
-/* In Audio_Process() */
+/* In Audio_Process() per-sample loop */
 current_gain += (target_gain - current_gain) * GAIN_RAMP_COEFF;
 duck_current_gain += (duck_target_gain - duck_current_gain) * GAIN_RAMP_COEFF;
 ```
 
 At 44.1kHz with 256-sample buffers (~172 buffers/sec), this gives ~10ms ramp time constant.
 
+### Sine Test Mode
+
+Command `0x0A 0x01` enables an internal 1kHz sine generator. The audio processing chain is completely bypassed — the 256-entry sine table is played directly into the TX buffer:
+
+```c
+/* 1kHz at 44100Hz: phase step ≈ 1486 (8.8 fixed point over 256-entry table) */
+for (uint16_t i = 0; i < samples; i += 2) {
+    int16_t val = sine_table[(sine_phase >> 8) & 0xFF] >> 2;  /* -12dB */
+    tx_buf[i]     = val;
+    tx_buf[i + 1] = val;
+    sine_phase += 1486;
+}
+```
+
+Useful for verifying the PCM5102A DAC output independently of the Bluetooth source.
+
 ### Audio Processing Chain
 
 ```c
 void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples) {
+    /* VU meter always updates from raw input */
+    VU_UpdateRMS(rx_buf, samples);
+
+    /* Sine test: generate 1kHz internally, ignore RX */
+    if (dsp_sine_test) { /* ... */ return; }
+
+    /* Bypass: direct passthrough */
     if (dsp_bypass_enabled) {
         memcpy(tx_buf, rx_buf, samples * sizeof(int16_t));
         return;
@@ -438,43 +502,31 @@ void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples) {
         /* 1. Preset EQ */
         preset_process(&left, &right);
 
-        /* 2. Loudness */
-        if (dsp_loudness_enabled) {
-            left  = loudness_process(&loudness_state_L, left);
-            right = loudness_process(&loudness_state_R, right);
-        }
+        /* 2. Loudness (+6dB low-shelf @ 150Hz) */
+        if (dsp_loudness_enabled) { /* ... */ }
 
-        /* 3. Bass Boost */
-        if (dsp_bass_boost_enabled) {
-            left  = bass_process(&bass_state_L, left);
-            right = bass_process(&bass_state_R, right);
-        }
+        /* 3. Bass Boost (+8dB low-shelf @ 100Hz) */
+        if (dsp_bass_boost_enabled) { /* ... */ }
 
-        /* 4. Normalizer/DRC */
-        if (dsp_normalizer_enabled) {
-            float peak = fmaxf(fabsf(left), fabsf(right));
-            float drc_gain = drc_process(peak);
-            left  *= drc_gain;
-            right *= drc_gain;
-        }
+        /* 4. Normalizer/DRC (2:1, -12dB threshold) */
+        if (dsp_normalizer_enabled) { /* ... */ }
 
         /* 5. Volume/Trim with smooth ramping */
         left  *= current_gain;
         right *= current_gain;
 
-        /* 6. Duck */
+        /* 6. Duck (-12dB when enabled) */
         left  *= duck_current_gain;
         right *= duck_current_gain;
 
         /* 7. Mute */
-        if (dsp_mute_enabled) {
-            left  = 0.0f;
-            right = 0.0f;
-        }
+        if (dsp_mute_enabled) { left = right = 0.0f; }
 
-        /* 8. Limiter (hard clip) */
-        left  = fmaxf(-1.0f, fminf(1.0f, left));
-        right = fmaxf(-1.0f, fminf(1.0f, right));
+        /* 8. Limiter (hard clip — safety) */
+        if (left  >  1.0f) left  =  1.0f;
+        if (left  < -1.0f) left  = -1.0f;
+        if (right >  1.0f) right =  1.0f;
+        if (right < -1.0f) right = -1.0f;
 
         /* Convert back to int16 */
         tx_buf[i]     = (int16_t)(left  * 32767.0f);
@@ -485,31 +537,21 @@ void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples) {
 
 ## IN-13 Nixie Bargraph VU Meter
 
-### DAC Configuration
-
-| Setting | Value | Notes |
-|---------|-------|-------|
-| Instance | DAC1 | APB1 peripheral |
-| Output Pin | PA4 (DAC1_OUT1) | Analog mode, no pull |
-| Trigger | None (software) | Written from main loop |
-| Output Buffer | Enabled | Low impedance drive |
-| Channel | 1 | 12-bit right-aligned |
-
 ### Drive Circuit
 
-The IN-13 requires 0-10mA for 0-100% bar length. An MPSA42 NPN transistor (300V, hFE ~50-100) operates as a linear current sink controlled by the DAC.
+The IN-13 requires 0–10mA for 0–100% bar length. An MPSA42 NPN transistor (300V, hFE ~50–100) operates as a linear current sink controlled by the DAC.
 
 ```
-+140V ─── 4K7 (1W) ─── IN-13 Anode
++140V ─── 4K7 (1W) ─── IN-13 Anode (yellow)
                          │
-                   100KΩ ─── IN-13 Aux Cathode
+                   100KΩ ─── IN-13 Aux Cathode (red)
                          │
-                   IN-13 Cathode
+                   IN-13 Cathode (middle)
                          │
                    MPSA42 Collector
-                   MPSA42 Base ─── 1KΩ ─── PA4
+                   MPSA42 Base ─── 1KΩ ─── PA4 (DAC1_OUT1)
                          │              │
-                       10KΩ (pull-down to GND)
+                       10KΩ (pull-down to GND)   ← required
                          │
                    MPSA42 Emitter ─── 270Ω ─── GND
 ```
@@ -517,9 +559,9 @@ The IN-13 requires 0-10mA for 0-100% bar length. An MPSA42 NPN transistor (300V,
 **Measured calibration points:**
 - 770mV at PA4 (DAC value 956) = 0% bar (tube barely visible)
 - 1840mV at PA4 (DAC value 2283) = 100% bar (full 120mm)
-- Below 770mV: tube off (unreliable glow region)
+- Below 770mV: DAC = 0 (tube fully off, unreliable glow region avoided)
 
-The 10KΩ base pull-down is required because the MPSA42 has sufficient gain that noise or finger-touch on the base causes false triggering.
+The 10KΩ base pull-down is required because MPSA42 has sufficient gain that noise or stray capacitance on the base causes false triggering.
 
 ### RMS Level Detection
 
@@ -544,17 +586,23 @@ static void VU_UpdateRMS(int16_t *rx_buf, uint16_t samples)
 
 **Design decisions:**
 - RMS computed from **input** signal (pre-DSP) to show true audio level
-- Called from DMA ISR (Audio_Process) — only float math, no HAL calls
+- Called from DMA ISR (`Audio_Process`) — only float math, no HAL calls
 - DAC write happens in main loop (~1ms interval) to avoid ISR overhead
 - Mono mix (L+R average) for single-channel VU display
 
 ### DAC Scaling
 
-Music RMS is typically 3000-10000 (not 32768 peak). Direct normalization to 32768 would only use ~30% of the tube range.
+Music RMS is typically 3000–10000 (not 32768 peak). Direct normalization to 32768 would only use ~30% of the tube range.
 
 ```c
 float normalized = vu_rms_smooth / 10000.0f;  /* Full scale at typical loud music */
 if (normalized > 1.0f) normalized = 1.0f;
+
+/* Below threshold: tube fully off */
+if (normalized < 0.01f) {
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_OFF);
+    return;
+}
 
 /* Sqrt compression: spreads mid-range for natural VU response */
 normalized = sqrtf(normalized);
@@ -564,7 +612,7 @@ uint16_t dac_val = VU_DAC_MIN + (uint16_t)(normalized * (VU_DAC_MAX - VU_DAC_MIN
 
 ### Startup Prime Burst
 
-Gas discharge tubes need ionization priming to ensure the glow starts from the bottom (near the auxiliary cathode). Without priming, random glowing spots can appear in the middle of the tube.
+Gas discharge tubes need ionization priming to ensure the glow starts from the bottom (near the auxiliary cathode). Without priming, random glowing spots appear mid-tube.
 
 ```c
 static void VU_Prime(void)
@@ -572,17 +620,18 @@ static void VU_Prime(void)
     HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_MAX);
     HAL_Delay(50);  /* 50ms at full current */
     HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VU_DAC_OFF);
+    vu_primed = 1;
 }
 ```
 
 ## Clock Configuration
 
-- HSE: 8 MHz (bypass mode, from ST-LINK)
-- PLL: 480 MHz system clock
+- HSE: 8 MHz (bypass mode, from ST-LINK oscillator)
+- PLL: 480 MHz system clock (PLLN=120, PLLM=1, PLLP=2)
 - AHBCLKDivider: /2 → 240 MHz
-- APB1: 120 MHz (USART2, USART3)
-- APB2: 120 MHz (SAI2)
-- SAI2 Clock: External (slave mode, from ESP32)
+- APB1: 120 MHz (USART2, USART3, DAC1)
+- APB2: 120 MHz (SAI1)
+- SAI1 Clock: External (slave mode — clock provided by ESP32 I2S master)
 
 ## Memory Map
 
@@ -601,21 +650,22 @@ static void VU_Prime(void)
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| No data received | Wiring | Check ESP32 TX → STM32 PD6 |
-| One byte then stops | Missing error callback | Implement HAL_UART_ErrorCallback |
+| No data received | Wiring | Check ESP32 GPIO4 (TX) → STM32 PD6 |
+| One byte then stops | Missing error callback | Implement `HAL_UART_ErrorCallback` |
 | Occasional byte loss | Priority | Set UART priority 0, DMA priority 2 |
-| "GATT:TRL" instead of "GATT:CTRL" | Normal | Parser tolerates this |
+| `GATT:TRL:` in log | Normal — 1 byte lost | Parser tolerates this, no action needed |
 
 ### I2S/SAI Issues
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| No audio received | No clock | Check ESP32 playing audio, 74HCT04 power |
-| Buffers/sec = 0 | No BCLK | Check wiring, scope BCLK signal |
-| Distorted audio | Format mismatch | Verify 16-bit Philips format |
+| No audio received | No clock | Check ESP32 playing audio, 74HCT04 power (5V) |
+| Buffers/sec = 0 | No BCLK | Check wiring to PE5, scope GPIO26 |
+| Distorted audio | Format mismatch | Verify 16-bit Philips, SCK grounded |
 | Wrong channels | FSPolarity | Check Active Low setting |
 | Glitchy audio | ClockStrobing | RX must use Rising Edge |
-| No DAC output | SD pin | Verify PA0 → PCM5102A DIN |
+| No DAC output | PE3 pin | Verify PE3 (SAI1_B SD) → PCM5102A DIN |
+| Drift increases | Startup order | TX DMA must start from first RxCplt, not boot |
 
 ### DSP Issues
 
@@ -624,8 +674,18 @@ static void VU_Prime(void)
 | Effect produces silence | Bad coefficients | Verify biquad math, check a0 normalization |
 | Volume drops on effect enable | Dynamic headroom | Use fixed -9dB headroom |
 | DRC pumping | Parameters | Use gentle settings (2:1, -12dB threshold) |
-| NIGHT volume stays low | Permanent trim change | Apply cap in update_target_gain() only |
+| NIGHT volume stays low after preset change | Permanent trim change | Apply cap in `update_target_gain()` only |
 | Clicks on effect toggle | Abrupt gain change | Reset filter states, use gain ramping |
+| Sine test: no tone | Bypass also active | Sine test checks first; disable bypass |
+
+### IN-13 Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Tube doesn't glow | HV supply off | Check 140–170V supply |
+| Glow in middle of tube | No prime burst | Verify VU_Prime() runs at startup |
+| Random flickering | No base pull-down | Add 10KΩ from MPSA42 base to GND |
+| Low sensitivity | Scaling | Check VU_DAC_MIN=956, VU_DAC_MAX=2283 |
 
 ## References
 
