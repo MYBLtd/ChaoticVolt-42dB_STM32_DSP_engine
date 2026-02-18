@@ -144,13 +144,13 @@ void HAL_DAC_MspDeInit(DAC_HandleTypeDef* hdac)
  * @brief SAI MSP Initialization
  * This function configures the hardware resources for SAI
  *
- * SAI2_A (Slave RX from BM83):
- *   PD13 -----> SAI2_SCK_A (Bit Clock Input)
- *   PD12 -----> SAI2_FS_A  (Frame Sync / LRCK Input)
- *   PD11 -----> SAI2_SD_A  (Serial Data Input)
+ * SAI1_A (Slave RX from ESP32):
+ *   PE5 -----> SAI1_SCK_A (Bit Clock Input)
+ *   PE4 -----> SAI1_FS_A  (Frame Sync / LRCK Input)
+ *   PE6 -----> SAI1_SD_A  (Serial Data Input)
  *
- * SAI2_B (Slave TX to DAC, synced to SAI2_A):
- *   PA0  -----> SAI2_SD_B  (Serial Data Output)
+ * SAI1_B (Slave TX to DAC, synced to SAI1_A):
+ *   PE3 -----> SAI1_SD_B  (Serial Data Output)
  *
  * @param hsai: SAI handle pointer
  * @retval None
@@ -159,27 +159,27 @@ void HAL_SAI_MspInit(SAI_HandleTypeDef* hsai)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    if(hsai->Instance == SAI2_Block_A)
+    if(hsai->Instance == SAI1_Block_A)
     {
         /* Peripheral clock enable */
-        __HAL_RCC_SAI2_CLK_ENABLE();
-        __HAL_RCC_GPIOD_CLK_ENABLE();
+        __HAL_RCC_SAI1_CLK_ENABLE();
+        __HAL_RCC_GPIOE_CLK_ENABLE();
 
-        /* SAI2_A GPIO Configuration (I2S Input)
-         * PD13 -----> SAI2_SCK_A (Bit Clock)  - use 1kΩ series resistor!
-         * PD12 -----> SAI2_FS_A  (Frame Sync / Word Select)
-         * PD11 -----> SAI2_SD_A  (Serial Data)
+        /* SAI1_A GPIO Configuration (I2S Input)
+         * PE5 -----> SAI1_SCK_A (Bit Clock)
+         * PE4 -----> SAI1_FS_A  (Frame Sync / Word Select)
+         * PE6 -----> SAI1_SD_A  (Serial Data)
          */
-        GPIO_InitStruct.Pin = GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13;
+        GPIO_InitStruct.Pin = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        GPIO_InitStruct.Alternate = GPIO_AF10_SAI2;
-        HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+        GPIO_InitStruct.Alternate = GPIO_AF6_SAI1;
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-        /* Configure DMA for SAI2_A RX - 16-bit data */
+        /* Configure DMA for SAI1_A RX - 16-bit data */
         hdma_sai_rx.Instance = DMA1_Stream0;
-        hdma_sai_rx.Init.Request = DMA_REQUEST_SAI2_A;
+        hdma_sai_rx.Init.Request = DMA_REQUEST_SAI1_A;
         hdma_sai_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
         hdma_sai_rx.Init.PeriphInc = DMA_PINC_DISABLE;
         hdma_sai_rx.Init.MemInc = DMA_MINC_ENABLE;
@@ -204,24 +204,24 @@ void HAL_SAI_MspInit(SAI_HandleTypeDef* hsai)
         /* HAL_NVIC_SetPriority(SAI2_IRQn, 1, 0); */
         /* HAL_NVIC_EnableIRQ(SAI2_IRQn); */
     }
-    else if(hsai->Instance == SAI2_Block_B)
+    else if(hsai->Instance == SAI1_Block_B)
     {
-        /* SAI2 clock already enabled by Block A */
-        __HAL_RCC_GPIOA_CLK_ENABLE();
+        /* SAI1 clock already enabled by Block A */
+        __HAL_RCC_GPIOE_CLK_ENABLE();
 
-        /* SAI2_B GPIO Configuration (I2S Output)
-         * PA0 -----> SAI2_SD_B (Serial Data Output)
+        /* SAI1_B GPIO Configuration (I2S Output)
+         * PE3 -----> SAI1_SD_B (Serial Data Output)
          */
-        GPIO_InitStruct.Pin = GPIO_PIN_0;
+        GPIO_InitStruct.Pin = GPIO_PIN_3;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        GPIO_InitStruct.Alternate = GPIO_AF10_SAI2;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+        GPIO_InitStruct.Alternate = GPIO_AF6_SAI1;
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-        /* Configure DMA for SAI2_B TX - 16-bit data */
+        /* Configure DMA for SAI1_B TX - 16-bit data */
         hdma_sai_tx.Instance = DMA1_Stream1;
-        hdma_sai_tx.Init.Request = DMA_REQUEST_SAI2_B;
+        hdma_sai_tx.Init.Request = DMA_REQUEST_SAI1_B;
         hdma_sai_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
         hdma_sai_tx.Init.PeriphInc = DMA_PINC_DISABLE;
         hdma_sai_tx.Init.MemInc = DMA_MINC_ENABLE;
@@ -251,24 +251,24 @@ void HAL_SAI_MspInit(SAI_HandleTypeDef* hsai)
  */
 void HAL_SAI_MspDeInit(SAI_HandleTypeDef* hsai)
 {
-    if(hsai->Instance == SAI2_Block_A)
+    if(hsai->Instance == SAI1_Block_A)
     {
         /* Peripheral clock disable */
-        __HAL_RCC_SAI2_CLK_DISABLE();
+        __HAL_RCC_SAI1_CLK_DISABLE();
 
-        /* SAI2_A GPIO DeInit */
-        HAL_GPIO_DeInit(GPIOD, GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13);
+        /* SAI1_A GPIO DeInit */
+        HAL_GPIO_DeInit(GPIOE, GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6);
 
         /* DMA DeInit */
         HAL_DMA_DeInit(hsai->hdmarx);
 
-        /* SAI2 interrupt DeInit */
-        HAL_NVIC_DisableIRQ(SAI2_IRQn);
+        /* SAI1 interrupt DeInit */
+        HAL_NVIC_DisableIRQ(SAI1_IRQn);
     }
-    else if(hsai->Instance == SAI2_Block_B)
+    else if(hsai->Instance == SAI1_Block_B)
     {
-        /* SAI2_B GPIO DeInit */
-        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_0);
+        /* SAI1_B GPIO DeInit */
+        HAL_GPIO_DeInit(GPIOE, GPIO_PIN_3);
 
         /* DMA DeInit */
         HAL_DMA_DeInit(hsai->hdmatx);

@@ -13,8 +13,8 @@
  * Peripherals:
  *   USART3 (Debug Console - ST-LINK VCP): PD8(TX), PD9(RX) @ 115200
  *   USART2 (ESP32 BLE Control): PD5(TX), PD6(RX) @ 115200
- *   SAI2_A (I2S Input from BM83): PD13(SCK), PD12(FS), PD11(SD) - Slave RX
- *   SAI2_B (I2S Output to DAC): PA0(SD) - Slave TX synced to SAI2_A
+ *   SAI1_A (I2S Input from ESP32): PE5(SCK), PE4(FS), PE6(SD) - Slave RX
+ *   SAI1_B (I2S Output to DAC): PE3(SD) - Slave TX synced to SAI1_A
  *
  ******************************************************************************
  */
@@ -36,10 +36,10 @@
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;  // ESP32 communication
 UART_HandleTypeDef huart3;  // Debug console (VCP)
-SAI_HandleTypeDef hsai_rx;  // SAI2_A - I2S Input (Slave RX)
-SAI_HandleTypeDef hsai_tx;  // SAI2_B - I2S Output (Slave TX)
-DMA_HandleTypeDef hdma_sai_rx;  // DMA for SAI2_A RX
-DMA_HandleTypeDef hdma_sai_tx;  // DMA for SAI2_B TX
+SAI_HandleTypeDef hsai_rx;  // SAI1_A - I2S Input (Slave RX)
+SAI_HandleTypeDef hsai_tx;  // SAI1_B - I2S Output (Slave TX)
+DMA_HandleTypeDef hdma_sai_rx;  // DMA for SAI1_A RX
+DMA_HandleTypeDef hdma_sai_tx;  // DMA for SAI1_B TX
 DAC_HandleTypeDef hdac1;    // DAC1 - IN-13 VU meter (PA4)
 
 /* Audio Buffers - placed in D2 SRAM for DMA1/DMA2 access --------------------*/
@@ -54,6 +54,7 @@ volatile uint8_t audio_rx_half_complete = 0;
 volatile uint8_t audio_rx_full_complete = 0;
 volatile uint32_t audio_buffer_count = 0;
 volatile uint32_t audio_overrun_count = 0;
+static volatile uint8_t tx_dma_started = 0;  /* TX DMA started from first RxCplt for alignment */
 
 /* Ring buffer for received data */
 #define RX_BUFFER_SIZE 256
@@ -528,7 +529,7 @@ static void VU_WriteDac(void)
 }
 
 /* DMA drift detection and auto-recovery */
-#define DMA_DRIFT_THRESHOLD     20      /* Max allowed drift in samples */
+#define DMA_DRIFT_THRESHOLD     100     /* Max allowed drift in samples - safety net only */
 #define DMA_DRIFT_CHECK_INTERVAL 500    /* Check every 500ms */
 static int16_t dma_initial_offset = 0;  /* Captured after startup */
 static uint8_t dma_offset_captured = 0; /* Flag: initial offset valid */
@@ -547,15 +548,15 @@ static void SAI_DMA_Resync(void)
     /* Clear errors and flush FIFOs */
     __HAL_SAI_CLEAR_FLAG(&hsai_rx, SAI_FLAG_OVRUDR | SAI_FLAG_AFSDET | SAI_FLAG_LFSDET | SAI_FLAG_WCKCFG);
     __HAL_SAI_CLEAR_FLAG(&hsai_tx, SAI_FLAG_OVRUDR | SAI_FLAG_AFSDET | SAI_FLAG_LFSDET | SAI_FLAG_WCKCFG);
-    SAI2_Block_A->CR2 |= SAI_xCR2_FFLUSH;
-    SAI2_Block_B->CR2 |= SAI_xCR2_FFLUSH;
+    SAI1_Block_A->CR2 |= SAI_xCR2_FFLUSH;
+    SAI1_Block_B->CR2 |= SAI_xCR2_FFLUSH;
 
     /* Clear buffers */
     memset(audio_tx_buffer, 0, sizeof(audio_tx_buffer));
 
-    /* Restart DMA */
+    /* Restart RX only — TX will re-align on next RxCplt callback */
+    tx_dma_started = 0;
     HAL_SAI_Receive_DMA(&hsai_rx, (uint8_t *)audio_rx_buffer, AUDIO_BUFFER_SIZE * 2);
-    HAL_SAI_Transmit_DMA(&hsai_tx, (uint8_t *)audio_tx_buffer, AUDIO_BUFFER_SIZE * 2);
 
     /* Reset drift tracking */
     dma_offset_captured = 0;
@@ -568,7 +569,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
-static void MX_SAI2_Init(void);
+static void MX_SAI1_Init(void);
 static void MX_DAC1_Init(void);
 void Error_Handler(void);
 
@@ -613,8 +614,8 @@ int main(void)
     MX_USART2_UART_Init();  // ESP32 BLE control
     printf("[OK] USART2 (ESP32 BLE) initialized\r\n");
 
-    MX_SAI2_Init();  // I2S Audio
-    printf("[OK] SAI2 (I2S Audio) initialized\r\n");
+    MX_SAI1_Init();  // I2S Audio
+    printf("[OK] SAI1 (I2S Audio) initialized\r\n");
     printf("[NOTE] Use 74HCT04 buffer for I2S signals (5V tolerant)\r\n");
 
     MX_DAC1_Init();  // IN-13 VU meter
@@ -625,12 +626,12 @@ int main(void)
     /* Print startup banner */
     printf("\r\n");
     printf("========================================\r\n");
-    printf("42dB DSP Engine v0.2\r\n");
+    printf("42dB DSP Engine v0.5.0\r\n");
     printf("========================================\r\n");
     printf("ESP32 BLE: PD5(TX), PD6(RX) @ 115200\r\n");
     printf("Debug:     PD8(TX), PD9(RX) @ 115200\r\n");
-    printf("I2S Input: PD13(SCK), PD12(FS), PD11(SD)\r\n");
-    printf("I2S Output: PA0(SD)\r\n");
+    printf("I2S Input: PE5(SCK), PE4(FS), PE6(SD)\r\n");
+    printf("I2S Output: PE3(SD)\r\n");
     printf("Audio:     %d Hz, %d ch, %d samples/buf\r\n",
            AUDIO_SAMPLE_RATE, AUDIO_CHANNELS, AUDIO_BUFFER_SAMPLES);
     printf("========================================\r\n\r\n");
@@ -648,53 +649,50 @@ int main(void)
     __HAL_SAI_CLEAR_FLAG(&hsai_tx, SAI_FLAG_OVRUDR | SAI_FLAG_AFSDET | SAI_FLAG_LFSDET | SAI_FLAG_WCKCFG);
 
     /* Flush FIFOs */
-    SAI2_Block_A->CR2 |= SAI_xCR2_FFLUSH;
-    SAI2_Block_B->CR2 |= SAI_xCR2_FFLUSH;
+    SAI1_Block_A->CR2 |= SAI_xCR2_FFLUSH;
+    SAI1_Block_B->CR2 |= SAI_xCR2_FFLUSH;
 
     /* Pre-fill TX buffer with silence to avoid garbage at startup */
     memset(audio_tx_buffer, 0, sizeof(audio_tx_buffer));
 
-    /* Start RX DMA first to receive audio data from ESP32/BM83 */
+    /* Start RX DMA only. TX DMA will be started from the first HAL_SAI_RxCpltCallback
+     * to guarantee half-buffer alignment: when RxCplt fires, RX just wrapped to position 0,
+     * so TX also starts at 0. This eliminates the random initial phase offset that would
+     * otherwise cause a race condition once drift grows to ±512 samples (~85 sec). */
     HAL_StatusTypeDef rx_status = HAL_SAI_Receive_DMA(&hsai_rx, (uint8_t *)audio_rx_buffer,
                                                        AUDIO_BUFFER_SIZE * 2);
+    tx_dma_started = 0;
 
-    /* Start TX DMA - synchronized to RX for same clock */
-    HAL_StatusTypeDef tx_status = HAL_SAI_Transmit_DMA(&hsai_tx, (uint8_t *)audio_tx_buffer,
-                                                        AUDIO_BUFFER_SIZE * 2);
-
-    if (rx_status == HAL_OK && tx_status == HAL_OK)
+    if (rx_status == HAL_OK)
     {
-        printf("[OK] SAI2 RX+TX DMA started (passthrough mode)\r\n");
+        printf("[OK] SAI1 RX DMA started - TX will align on first RxCplt\r\n");
     }
     else
     {
-        printf("[WARN] DMA start failed: RX=%d TX=%d\r\n", rx_status, tx_status);
+        printf("[WARN] DMA start failed: RX=%d\r\n", rx_status);
     }
 
     printf("\r\n[INFO] PASSTHROUGH MODE - Audio from ESP32 to DAC\r\n");
-    printf("       RX: BCLK->PD13, LRCK->PD12, SD->PD11\r\n");
-    printf("       TX: SD->PA0 (shares BCLK/LRCK from ESP32)\r\n\r\n");
+    printf("       RX: BCLK->PE5, LRCK->PE4, SD->PE6\r\n");
+    printf("       TX: SD->PE3 (shares BCLK/LRCK from ESP32)\r\n\r\n");
 
     /* Debug: print SAI and GPIO register status */
-    printf("[DEBUG] SAI2_A CR1=0x%08lX SR=0x%08lX\r\n",
-           SAI2_Block_A->CR1, SAI2_Block_A->SR);
-    printf("[DEBUG] SAI2_B CR1=0x%08lX SR=0x%08lX\r\n",
-           SAI2_Block_B->CR1, SAI2_Block_B->SR);
-    /* GPIO mode and alternate function for PD11,12,13 */
-    printf("[DEBUG] GPIOD MODER=0x%08lX AFR[1]=0x%08lX\r\n",
-           GPIOD->MODER, GPIOD->AFR[1]);
-    /* GPIO for PA0 (SAI2_B output) */
-    printf("[DEBUG] GPIOA MODER=0x%08lX AFR[0]=0x%08lX\r\n",
-           GPIOA->MODER, GPIOA->AFR[0]);
-    /* Check SAI2 clock source */
-    printf("[DEBUG] RCC D2CCIP1R=0x%08lX (SAI23SEL bits 8:6)\r\n",
+    printf("[DEBUG] SAI1_A CR1=0x%08lX SR=0x%08lX\r\n",
+           SAI1_Block_A->CR1, SAI1_Block_A->SR);
+    printf("[DEBUG] SAI1_B CR1=0x%08lX SR=0x%08lX\r\n",
+           SAI1_Block_B->CR1, SAI1_Block_B->SR);
+    /* GPIO mode and alternate function for PE4,PE5,PE6 (AF6=SAI1) */
+    printf("[DEBUG] GPIOE MODER=0x%08lX AFR[0]=0x%08lX\r\n",
+           GPIOE->MODER, GPIOE->AFR[0]);
+    /* Check SAI1 clock source (D2CCIP1R bits 2:0 = SAI1SEL) */
+    printf("[DEBUG] RCC D2CCIP1R=0x%08lX (SAI1SEL bits 2:0)\r\n",
            RCC->D2CCIP1R);
     /* Read GPIO input values to verify signals */
-    printf("[DEBUG] GPIOD IDR=0x%04lX (PD11=%d PD12=%d PD13=%d)\r\n",
-           GPIOD->IDR,
-           (GPIOD->IDR >> 11) & 1,
-           (GPIOD->IDR >> 12) & 1,
-           (GPIOD->IDR >> 13) & 1);
+    printf("[DEBUG] GPIOE IDR=0x%04lX (PE4=%d PE5=%d PE6=%d)\r\n",
+           GPIOE->IDR,
+           (GPIOE->IDR >> 4) & 1,
+           (GPIOE->IDR >> 5) & 1,
+           (GPIOE->IDR >> 6) & 1);
 
     /* Variables for periodic status */
     uint32_t last_status_time = 0;
@@ -724,17 +722,12 @@ int main(void)
             }
             else
             {
-                /* Check drift from initial offset (handle wrap-around) */
-                int16_t drift = current_offset - dma_initial_offset;
-                if (drift > 512) drift -= 1024;
-                if (drift < -512) drift += 1024;
-
-                if (drift > DMA_DRIFT_THRESHOLD || drift < -DMA_DRIFT_THRESHOLD)
-                {
-                    printf("[RESYNC] DMA drift=%d (threshold=%d), restarting SAI/DMA (resync #%lu)\r\n",
-                           drift, DMA_DRIFT_THRESHOLD, dma_resync_count + 1);
-                    SAI_DMA_Resync();
-                }
+                /* Track drift for monitoring only — resync disabled because:
+                 * 1. Half-buffer processing tolerates arbitrary drift
+                 * 2. Hard DMA restart causes worse glitches than drift itself
+                 * 3. ESP32 I2S clock jitter causes rapid drift that would
+                 *    trigger constant resyncs, each one an audible click */
+                (void)0;  /* drift monitoring continues in debug output below */
             }
             last_drift_check = now;
         }
@@ -761,9 +754,9 @@ int main(void)
                 if (drift < -512) drift += 1024;
 
                 printf("[DEBUG] SAI_A: SR=0x%lX CR1=0x%08lX\r\n",
-                       SAI2_Block_A->SR, SAI2_Block_A->CR1);
+                       SAI1_Block_A->SR, SAI1_Block_A->CR1);
                 printf("[DEBUG] SAI_B: SR=0x%lX CR1=0x%08lX\r\n",
-                       SAI2_Block_B->SR, SAI2_Block_B->CR1);
+                       SAI1_Block_B->SR, SAI1_Block_B->CR1);
                 printf("[DEBUG] DMA RX NDTR=%lu, TX NDTR=%lu, offset=%d, drift=%d\r\n",
                        rx_ndtr, tx_ndtr, offset, drift);
                 extern volatile uint32_t audio_process_count;
@@ -933,10 +926,10 @@ static void MX_DMA_Init(void)
 
     /* DMA interrupt init */
     /* Audio DMA at lower priority (2) so UART can interrupt */
-    /* DMA1_Stream0_IRQn - SAI2_A RX */
+    /* DMA1_Stream0_IRQn - SAI1_A RX */
     HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
-    /* DMA1_Stream1_IRQn - SAI2_B TX */
+    /* DMA1_Stream1_IRQn - SAI1_B TX */
     HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
@@ -946,24 +939,24 @@ static void MX_DMA_Init(void)
 }
 
 /**
- * @brief SAI2 Initialization Function (I2S Audio Input/Output)
+ * @brief SAI1 Initialization Function (I2S Audio Input/Output)
  *
- * SAI2_A: Slave Receiver - receives I2S from BM83
- *   - Pins: PD13 (SCK), PD12 (FS), PD11 (SD)
- *   - Mode: Slave, receives clock from BM83 (external master)
+ * SAI1_A: Slave Receiver - receives I2S from ESP32
+ *   - Pins: PE5 (SCK), PE4 (FS), PE6 (SD)
+ *   - Mode: Slave, receives clock from ESP32 (external master)
  *
- * SAI2_B: Slave Transmitter - outputs I2S to DAC
- *   - Pin: PA0 (SD)
- *   - Mode: Synchronous slave to SAI2_A (shares clock)
+ * SAI1_B: Slave Transmitter - outputs I2S to DAC
+ *   - Pin: PE3 (SD)
+ *   - Mode: Synchronous slave to SAI1_A (shares clock)
  *
  * @param None
  * @retval None
  */
-static void MX_SAI2_Init(void)
+static void MX_SAI1_Init(void)
 {
-    /* -------- SAI2 Block A - Slave Receiver (I2S Input) -------- */
+    /* -------- SAI1 Block A - Slave Receiver (I2S Input) -------- */
     /* Using FREE protocol for full control over I2S timing */
-    hsai_rx.Instance = SAI2_Block_A;
+    hsai_rx.Instance = SAI1_Block_A;
     hsai_rx.Init.Protocol = SAI_FREE_PROTOCOL;
     hsai_rx.Init.AudioMode = SAI_MODESLAVE_RX;
     hsai_rx.Init.DataSize = SAI_DATASIZE_16;
@@ -1001,9 +994,9 @@ static void MX_SAI2_Init(void)
     __HAL_SAI_DISABLE_IT(&hsai_rx, SAI_IT_OVRUDR | SAI_IT_AFSDET | SAI_IT_LFSDET | SAI_IT_WCKCFG);
     __HAL_SAI_DISABLE_IT(&hsai_tx, SAI_IT_OVRUDR | SAI_IT_AFSDET | SAI_IT_LFSDET | SAI_IT_WCKCFG);
 
-    /* -------- SAI2 Block B - Slave Transmitter (I2S Output) -------- */
+    /* -------- SAI1 Block B - Slave Transmitter (I2S Output) -------- */
     /* Synchronized to Block A */
-    hsai_tx.Instance = SAI2_Block_B;
+    hsai_tx.Instance = SAI1_Block_B;
     hsai_tx.Init.Protocol = SAI_FREE_PROTOCOL;
     hsai_tx.Init.AudioMode = SAI_MODESLAVE_TX;
     hsai_tx.Init.DataSize = SAI_DATASIZE_16;
@@ -1356,8 +1349,10 @@ static void Audio_Process(int16_t *rx_buf, int16_t *tx_buf, uint16_t samples)
  */
 void HAL_SAI_RxHalfCpltCallback(SAI_HandleTypeDef *hsai)
 {
-    if (hsai->Instance == SAI2_Block_A)
+    if (hsai->Instance == SAI1_Block_A)
     {
+        /* Skip until TX DMA is aligned and running */
+        if (!tx_dma_started) return;
         Audio_Process(audio_rx_buffer, audio_tx_buffer, AUDIO_BUFFER_SIZE);
         audio_buffer_count++;
     }
@@ -1370,8 +1365,15 @@ void HAL_SAI_RxHalfCpltCallback(SAI_HandleTypeDef *hsai)
  */
 void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *hsai)
 {
-    if (hsai->Instance == SAI2_Block_A)
+    if (hsai->Instance == SAI1_Block_A)
     {
+        if (!tx_dma_started)
+        {
+            /* RX DMA just wrapped to position 0 — start TX DMA now for perfect alignment.
+             * TX starts at tx[0], CPU writes tx[512..1023] below: no overlap. */
+            HAL_SAI_Transmit_DMA(&hsai_tx, (uint8_t *)audio_tx_buffer, AUDIO_BUFFER_SIZE * 2);
+            tx_dma_started = 1;
+        }
         Audio_Process(&audio_rx_buffer[AUDIO_BUFFER_SIZE],
                      &audio_tx_buffer[AUDIO_BUFFER_SIZE], AUDIO_BUFFER_SIZE);
         audio_buffer_count++;
@@ -1410,14 +1412,14 @@ volatile uint32_t sai_last_error_b = 0;
 
 void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
 {
-    if (hsai->Instance == SAI2_Block_A)
+    if (hsai->Instance == SAI1_Block_A)
     {
         sai_error_count_a++;
         sai_last_error_a = hsai->ErrorCode;
         /* Just clear flags, don't restart DMA from interrupt */
         __HAL_SAI_CLEAR_FLAG(hsai, SAI_FLAG_OVRUDR | SAI_FLAG_AFSDET | SAI_FLAG_LFSDET);
     }
-    else if (hsai->Instance == SAI2_Block_B)
+    else if (hsai->Instance == SAI1_Block_B)
     {
         sai_error_count_b++;
         sai_last_error_b = hsai->ErrorCode;
