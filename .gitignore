@@ -1,4 +1,7 @@
-ESP32_BT-SPKR-DSP-001_BLE_GATT*/
+# ESP32 build artifacts (source is tracked, build output is not)
+ESP32_BT-SPKR-DSP-001_BLE_GATT*/build/
+ESP32_BT-SPKR-DSP-001_BLE_GATT*/managed_components/
+ESP32_BT-SPKR-DSP-001_BLE_GATT*/dependencies.lock
 # =========================
 # Build artifacts (general)
 # =========================

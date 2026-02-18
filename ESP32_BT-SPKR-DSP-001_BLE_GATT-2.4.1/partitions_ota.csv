@@ -1,0 +1,12 @@
+# OTA Partition Table for ESP32 Bluetooth Speaker
+# FSD-DSP-001: Hybrid OTA via BLE+WiFi
+#
+# Two ~1.9MB OTA slots for firmware (current app ~1.6MB with WiFi+OTA)
+# NVS preserved across OTA updates
+#
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000
+otadata,  data, ota,     0xF000,   0x2000
+phy_init, data, phy,     0x11000,  0x1000
+ota_0,    app,  ota_0,   0x20000,  0x1F0000
+ota_1,    app,  ota_1,   0x210000, 0x1F0000
