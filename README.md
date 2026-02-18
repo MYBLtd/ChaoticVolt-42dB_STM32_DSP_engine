@@ -10,6 +10,10 @@ This project implements a DSP audio engine that sits between a Bluetooth audio s
 
 Control commands are received via BLE GATT on the ESP32, which relays them over UART to the STM32. The STM32 replies with the new DSP state so the ESP32 can update its BLE status characteristics.
 
+I created an iPhone and a Apple Watch app to control the DSP. Volume control is done by hardware volume control on the player.
+This way you can always control the DSP no matter what device is playing music over Bluetooth (or any other means) to the device. 
+
+
 ```
 Current setup (ESP32 A2DP):
 
@@ -515,5 +519,9 @@ Robin Kluit
 - [STM32H7 SAI Application Note (AN5543)](https://www.st.com/resource/en/application_note/an5543)
 - [STM32H7 DMA Application Note (AN4031)](https://www.st.com/resource/en/application_note/an4031)
 - [Special thanks to Andreas Spiess:](https://youtu.be/5DG0-_lseR4?si=OCAofh8rW4z6m_Xm) - Andreas inspired me to speed up my workflow further with Claude AI. I hate to do documentation, AI save a lot of time doing this for me.
+
+## Maintenance
+
+This repo currently does not accept external pull requests. Please use Issues or Discussions for reports and suggestions.
 
 
