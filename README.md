@@ -563,4 +563,8 @@ Robin Kluit
 
 This repo currently does not accept external pull requests. Please use Issues or Discussions for reports and suggestions.
 
+## Fun
+
+Early stage development hardware setup:
+<img src="docs/images/IMG_2457.JPG" width="320" alt="hardware mockup">
 
