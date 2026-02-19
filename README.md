@@ -517,7 +517,7 @@ This firmware is one of three projects that form the **42dB audio system**:
 |---------|-----------|------|
 | **42dB STM32 DSP Engine** (this repo) | [ChaoticVolt-42dB_STM32_DSP_engine](https://github.com/MYBLtd/ChaoticVolt-42dB_STM32_DSP_engine) | Real-time audio DSP processor |
 | **42dB iPhone & Apple Watch App** | [ChaoticVolt-42_Decibels-iPhone-and-WatchOS-app](https://github.com/MYBLtd/ChaoticVolt-42_Decibels-iPhone-and-WatchOS-app) | BLE GATT control interface |
-| **ESP32 BT-SPKR firmware** | Snapshot included in this repo (`ESP32_BT-SPKR-DSP-001_BLE_GATT-2.4.x/`) | A2DP Bluetooth sink + GATT relay |
+| **ESP32 BLE GATT / A2DP firmware** | [ChoticVolt-ESP32_I2S_Master_with_BLE_GATT](https://github.com/MYBLtd/ChoticVolt-ESP32_I2S_Master_with_BLE_GATT) | A2DP Bluetooth sink + GATT relay |
 
 ### How They Fit Together
 
