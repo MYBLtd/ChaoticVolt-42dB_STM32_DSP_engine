@@ -626,7 +626,7 @@ int main(void)
     /* Print startup banner */
     printf("\r\n");
     printf("========================================\r\n");
-    printf("42dB DSP Engine v0.5.0\r\n");
+    printf("42dB DSP Engine v0.5.0  Protocol v%d\r\n", PROTOCOL_VERSION);
     printf("========================================\r\n");
     printf("ESP32 BLE: PD5(TX), PD6(RX) @ 115200\r\n");
     printf("Debug:     PD8(TX), PD9(RX) @ 115200\r\n");

@@ -1,17 +1,22 @@
-# 42dB DSP Engine for STM32H753
+# 42dB DSP Engine for STM32H753 / STM32F446VET6
 
 Real-time audio DSP processor running on STM32H753ZI (Nucleo-144), receiving I2S audio from ESP32 Bluetooth A2DP sink, with BLE GATT control interface.
+
+The Nucleo was used as prototyping board in the early stages as this was the only suitable at hand.
+The project is designed to be run on a STM32F446VET6 on a custom board also carrying the I2S master (Microchip BM83 doing A2DP, capable of AAC encoding), an ESP32 for BLE GATT and general control of the board, and DAC like PCM5102A or any othe I2S DAC.
 
 **Version:** 0.5.0 | **Build:** 59 | **Date:** 2026-02-18
 
 ## Overview
 
-This project implements a DSP audio engine that sits between a Bluetooth audio source (ESP32 running A2DP sink) and an I2S DAC. The STM32H753 receives audio over I2S via SAI1, applies real-time DSP processing (EQ, loudness, compression, etc.), and outputs to a PCM5102A DAC.
+This project implements a DSP audio engine that sits between a Bluetooth audio source (ESP32 running A2DP sink or something like Microchip BM83) and an I2S DAC. The STM32H753 receives audio over I2S via SAI1, applies real-time DSP processing (EQ, loudness, compression, etc.), and outputs to a PCM5102A DAC.
 
 Control commands are received via BLE GATT on the ESP32, which relays them over UART to the STM32. The STM32 replies with the new DSP state so the ESP32 can update its BLE status characteristics.
 
-I created an iPhone and a Apple Watch app to control the DSP. Volume control is done by hardware volume control on the player.
-This way you can always control the DSP no matter what device is playing music over Bluetooth (or any other means) to the device. 
+I created an iPhone and Apple Watch app to control the DSP. Volume control is done by hardware volume control on the player.
+This way you can always control the DSP no matter what device is playing music over Bluetooth (or any other means) to the device.
+
+This STM32 DSP engine is part of a three-project ecosystem — see [Related Projects](#related-projects) below.
 
 
 ```
@@ -503,6 +508,40 @@ Ensure you are on v0.3.0 or later. The fixed -9dB headroom approach means effect
 3. Verify 10KΩ base pull-down is in place
 4. Scope PA4 — should show ~770mV at quiet, ~1840mV at loud music
 5. If tube starts in middle (not bottom), prime burst may have failed — check startup log
+
+## Related Projects
+
+This firmware is one of three projects that form the **42dB audio system**:
+
+| Project | Repository | Role |
+|---------|-----------|------|
+| **42dB STM32 DSP Engine** (this repo) | [ChaoticVolt-42dB_STM32_DSP_engine](https://github.com/MYBLtd/ChaoticVolt-42dB_STM32_DSP_engine) | Real-time audio DSP processor |
+| **42dB iPhone & Apple Watch App** | [ChaoticVolt-42_Decibels-iPhone-and-WatchOS-app](https://github.com/MYBLtd/ChaoticVolt-42_Decibels-iPhone-and-WatchOS-app) | BLE GATT control interface |
+| **ESP32 BT-SPKR firmware** | Snapshot included in this repo (`ESP32_BT-SPKR-DSP-001_BLE_GATT-2.4.x/`) | A2DP Bluetooth sink + GATT relay |
+
+### How They Fit Together
+
+```
+┌──────────────────────┐   BLE GATT    ┌──────────────┐   UART (GATT relay)   ┌─────────────────┐
+│  iPhone / Apple Watch │──────────────>│    ESP32     │──────────────────────>│  STM32H753      │
+│  42dB App             │               │  A2DP sink   │                       │  DSP Engine     │
+│                       │               │  GATT relay  │<──────────────────────│  (this project) │
+└──────────────────────┘               └──────┬───────┘   status reply        └────────┬────────┘
+                                              │ I2S audio                               │ I2S audio
+                                              └───────────────────────────────────────>│ PCM5102A DAC
+```
+
+The DSP processing runs entirely on the STM32 — the ESP32 acts as a Bluetooth A2DP sink and GATT relay only.
+
+### Version Compatibility
+
+The three projects communicate over a shared **UART/BLE protocol** (command format `GATT:CTRL:<hex>`). When the protocol changes, all three must be updated together. Use this table to find known-good combinations:
+
+| Protocol | STM32 DSP Engine | ESP32 Firmware | iPhone/Watch App |
+|----------|-----------------|----------------|-----------------|
+| v1 | v0.3.0 – v0.5.x | v2.4.1 – v2.4.3 | check app repo |
+
+> **Rule of thumb:** If you update one project and a feature stops working, check that the other two are on a compatible protocol version. Each project's changelog notes which protocol version it targets.
 
 ## License
 

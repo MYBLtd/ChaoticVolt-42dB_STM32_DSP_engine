@@ -64,6 +64,11 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+/* GATT/UART protocol version — shared contract with ESP32 and iPhone/WatchOS app.
+ * Increment when commands, format, or BLE characteristics change (not on internal fixes).
+ * All three projects must agree on this number to work together. */
+#define PROTOCOL_VERSION 1
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
