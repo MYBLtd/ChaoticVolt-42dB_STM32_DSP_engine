@@ -533,6 +533,8 @@ This firmware is one of three projects that form the **42dB audio system**:
 
 The DSP processing runs entirely on the STM32 — the ESP32 acts as a Bluetooth A2DP sink and GATT relay only.
 
+> **Historical note:** ESP32 firmware v2.3.1 and earlier contained its own DSP processing chain (biquad EQ, loudness, normalizer, limiter) running on the ESP32. This was removed in v2.4.0 when DSP was migrated to this STM32 engine. Tag [v2.3.1](https://github.com/MYBLtd/ChoticVolt-ESP32_I2S_Master_with_BLE_GATT/releases/tag/v2.3.1) is the last version with ESP32-side DSP and may be useful as a standalone reference or for embedded targets without an external STM32.
+
 ### Version Compatibility
 
 The three projects communicate over a shared **UART/BLE protocol** (command format `GATT:CTRL:<hex>`). When the protocol changes, all three must be updated together. Use this table to find known-good combinations:
